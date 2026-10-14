@@ -1,0 +1,84 @@
+{
+  "frappe_versions": {
+    "version-15": {
+      "title": "Version 15",
+      "python": "3.11",
+      "node": "18",
+      "default": true
+    },
+    "version-16": {
+      "title": "Version 16",
+      "python": "3.14",
+      "node": "24"
+    }
+  },
+  "apps": {
+    "frappe": {
+      "title": "Frappe",
+      "description": "The framework. Always installed first.",
+      "repo": "https://github.com/frappe/frappe.git",
+      "branches": {
+        "version-15": "version-15",
+        "version-16": "version-16"
+      },
+      "requires": [],
+      "private": false
+    },
+    "erpnext": {
+      "title": "ERPNext",
+      "description": "Accounting, stock, sales, purchase and manufacturing.",
+      "repo": "https://github.com/frappe/erpnext.git",
+      "branches": {
+        "version-15": "version-15",
+        "version-16": "version-16"
+      },
+      "requires": [
+        "frappe"
+      ],
+      "private": false
+    },
+    "india_compliance": {
+      "title": "India Compliance",
+      "description": "GST, e-invoicing and e-way bill for ERPNext.",
+      "repo": "https://github.com/resilient-tech/india-compliance.git",
+      "branches": {
+        "version-15": "version-15",
+        "version-16": "version-16"
+      },
+      "requires": [
+        "frappe",
+        "erpnext"
+      ],
+      "private": false
+    },
+    "lending": {
+      "title": "Lending",
+      "description": "Loan management on top of ERPNext.",
+      "repo": "https://github.com/frappe/lending.git",
+      "branches": {
+        "version-15": "version-15",
+        "version-16": "version-16"
+      },
+      "requires": [
+        "frappe",
+        "erpnext"
+      ],
+      "private": false
+    }
+  },
+  "presets": {
+    "plain-erpnext": {
+      "title": "Plain ERPNext",
+      "description": "Frappe and ERPNext only.",
+      "apps": [
+        "erpnext"
+      ],
+      "default": true
+    },
+    "empty-frappe": {
+      "title": "Empty Frappe",
+      "description": "Frappe only. Add apps on the next screen.",
+      "apps": []
+    }
+  }
+}

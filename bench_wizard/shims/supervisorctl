@@ -1,0 +1,4 @@
+#!/bin/sh
+# Bench Wizard sets up benches for `bench start`. Bench would otherwise call
+# `sudo supervisorctl` during init on machines that have Supervisor installed.
+exit 0

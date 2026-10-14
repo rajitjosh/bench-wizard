@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bench Wizard</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#2E8BE6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
+      <span>Bench Wizard<small>Local Frappe setup</small></span>
+    </div>
+    <div class="prog" aria-hidden="true"><i id="progress"></i></div>
+    <nav class="vsteps" id="steps" aria-label="Wizard steps"></nav>
+    <div class="foot" id="rail-foot"></div>
+  </aside>
+  <div class="content">
+    <main class="main"><div class="col" id="view"><p class="lead">Loading…</p></div></main>
+    <footer class="footer"><div class="in2" id="footer"></div></footer>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
