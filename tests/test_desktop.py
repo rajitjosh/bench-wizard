@@ -32,13 +32,15 @@ class EntryTest(unittest.TestCase):
 class MacTest(unittest.TestCase):
     def test_install_builds_an_app_bundle_that_runs_start_sh(self):
         with tempfile.TemporaryDirectory() as tmp:
-            bundle = desktop.install("/opt/bench wizard", applications_dir=tmp, system="darwin")
+            bundle = desktop.install(str(ROOT), applications_dir=tmp, system="darwin")
             self.assertEqual(bundle, os.path.join(tmp, "Bench Wizard.app"))
             plist = Path(bundle, "Contents/Info.plist").read_text()
             self.assertIn("<string>bench-wizard</string>", plist)
             launcher = Path(bundle, "Contents/MacOS/bench-wizard")
             self.assertTrue(os.access(launcher, os.X_OK))
-            self.assertIn('exec "/opt/bench wizard/start.sh" --app', launcher.read_text())
+            self.assertIn(f'exec "{ROOT}/start.sh" --app', launcher.read_text())
+            self.assertIn("<key>CFBundleIconFile</key><string>icon</string>", plist)
+            self.assertEqual(Path(bundle, "Contents/Resources/icon.icns").read_bytes()[:4], b"icns")
             self.assertIn("brew\" shellenv", launcher.read_text())
 
     def test_finds_chrome_inside_applications(self):

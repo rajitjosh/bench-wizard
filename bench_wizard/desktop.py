@@ -2,9 +2,7 @@
 import json
 import os
 import shutil
-import subprocess
 import sys
-import tempfile
 
 BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge",
             "brave-browser")
@@ -49,18 +47,6 @@ MAC_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def _mac_icon(svg, icns):
-    """Best effort: render the SVG with Quick Look and convert it to .icns. No icon if that fails."""
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            subprocess.run(["qlmanage", "-t", "-s", "512", "-o", tmp, svg], capture_output=True, timeout=30)
-            png = os.path.join(tmp, os.path.basename(svg) + ".png")
-            if os.path.exists(png):
-                subprocess.run(["sips", "-s", "format", "icns", png, "--out", icns], capture_output=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
-
 def install_mac(root, applications_dir=None):
     """Create ~/Applications/Bench Wizard.app. Returns the bundle's path."""
     bundle = os.path.join(applications_dir or os.path.expanduser("~/Applications"), "Bench Wizard.app")
@@ -72,7 +58,9 @@ def install_mac(root, applications_dir=None):
     with open(launcher, "w") as fh:
         fh.write(mac_launcher(root))
     os.chmod(launcher, 0o755)
-    _mac_icon(os.path.join(root, "bench_wizard/web/icon.svg"), os.path.join(bundle, "Contents/Resources/icon.icns"))
+    # icon.icns is built from web/icon-mac.svg (see README); copying it busts the Finder icon cache.
+    shutil.copyfile(os.path.join(root, "bench_wizard/web/icon.icns"), os.path.join(bundle, "Contents/Resources/icon.icns"))
+    os.utime(bundle)
     return bundle
 
 
