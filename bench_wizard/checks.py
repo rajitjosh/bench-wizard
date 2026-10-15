@@ -1,8 +1,11 @@
-"""Detect and install what a Frappe bench needs on an Ubuntu machine."""
+"""Detect and install what a Frappe bench needs on an Ubuntu machine or a Mac (with Homebrew)."""
 import glob
 import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 
 BUILD_PACKAGES = ["git", "libffi-dev", "libssl-dev", "build-essential", "libmysqlclient-dev", "curl",
                   "software-properties-common"]
@@ -14,11 +17,29 @@ collation-server = utf8mb4_unicode_ci
 """
 NVM_INSTALL = "https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh"
 APT = ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y"]
+# Apps started from Finder get a bare PATH, so Homebrew's directories are added on a Mac.
+BREW_PATHS = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"]
+BREW_PACKAGES = ["pkg-config"]
+# Homebrew no longer packages wkhtmltopdf; this is the upstream build (Intel, runs under Rosetta).
+WKHTMLTOPDF_PKG = ("https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-2/"
+                   "wkhtmltox-0.12.6-2.macos-cocoa.pkg")
 SHIMS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shims")
 
 
 def _home(home):
     return home or os.path.expanduser("~")
+
+
+def is_mac(system=None):
+    return (system or sys.platform) == "darwin"
+
+
+def brew_prefix():
+    """Where Homebrew lives: /opt/homebrew on Apple silicon, /usr/local on Intel."""
+    for prefix in ("/opt/homebrew", "/usr/local"):
+        if os.path.exists(os.path.join(prefix, "bin", "brew")):
+            return prefix
+    return "/opt/homebrew"
 
 
 def _version_key(text):
@@ -32,18 +53,26 @@ def node_bin(node, home=None):
     return max(found, key=lambda d: _version_key(d.split("/")[-2])) if found else None
 
 
-def build_env(node, home=None, base=None):
+def build_env(node, home=None, base=None, system=None):
     """Environment for bench commands: shims, the profile's Node and ~/.local/bin first on PATH."""
     env = dict(os.environ if base is None else base)
     first = [d for d in (SHIMS_DIR, node_bin(node, home), os.path.join(_home(home), ".local/bin")) if d]
-    env["PATH"] = ":".join(first + [env.get("PATH", "/usr/bin:/bin")])
+    rest = env.get("PATH", "/usr/bin:/bin").split(":")
+    if is_mac(system):
+        rest += [d for d in BREW_PATHS if d not in rest]
+    env["PATH"] = ":".join(first + rest)
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
 
 
+def _with_system_dirs(path):
+    extra = ["/usr/sbin", "/sbin"] + (BREW_PATHS if is_mac() else [])
+    return ":".join([path] + [d for d in extra if d not in path.split(":")])
+
+
 def run_cmd(argv, env=None, input=None, timeout=60):
     env = dict(env or os.environ)
-    env["PATH"] = env.get("PATH", "") + ":/usr/sbin:/sbin"
+    env["PATH"] = _with_system_dirs(env.get("PATH", ""))
     try:
         result = subprocess.run(argv, env=env, input=input, stdin=None if input is not None else subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
@@ -64,16 +93,28 @@ def _row(id, title, note, required, status, found=""):
     return {"id": id, "title": title, "note": note, "required": required, "status": status, "found": found}
 
 
-def detect_all(profile, run=run_cmd, home=None):
-    env = build_env(profile["node"], home)
+def _detect_build_mac(run, env):
+    tools = [("Xcode command line tools", ["xcode-select", "-p"]), ("Homebrew", ["brew", "--version"]),
+             ("git", ["git", "--version"])] + [(p, [p, "--version"]) for p in BREW_PACKAGES]
+    missing = [name for name, argv in tools if run(argv, env)[0] != 0]
+    found = ("missing: " + ", ".join(missing)) if missing and len(missing) < len(tools) else ("" if missing else "installed")
+    return _row("build", "Homebrew and build tools", ", ".join(name for name, _ in tools), "installed",
+                "missing" if missing else "ok", found)
+
+
+def detect_all(profile, run=run_cmd, home=None, system=None):
+    env = build_env(profile["node"], home, system=system)
     rows = []
 
-    rc, out = run(["dpkg-query", "-W", "-f=${Package} ${Status}\n", *BUILD_PACKAGES], env)
-    installed = {line.split()[0] for line in out.splitlines() if line.endswith("install ok installed")}
-    missing = [p for p in BUILD_PACKAGES if p not in installed]
-    rows.append(_row("build", "Git and build tools", ", ".join(BUILD_PACKAGES), "installed",
-                     "missing" if missing else "ok",
-                     ("missing: " + ", ".join(missing)) if missing and installed else ("installed" if installed else "")))
+    if is_mac(system):
+        rows.append(_detect_build_mac(run, env))
+    else:
+        rc, out = run(["dpkg-query", "-W", "-f=${Package} ${Status}\n", *BUILD_PACKAGES], env)
+        installed = {line.split()[0] for line in out.splitlines() if line.endswith("install ok installed")}
+        missing = [p for p in BUILD_PACKAGES if p not in installed]
+        rows.append(_row("build", "Git and build tools", ", ".join(BUILD_PACKAGES), "installed",
+                         "missing" if missing else "ok",
+                         ("missing: " + ", ".join(missing)) if missing and installed else ("installed" if installed else "")))
 
     python = f"python{profile['python']}"
     probe = ("import sys, venv, ensurepip, sysconfig, os; "
@@ -103,7 +144,7 @@ def detect_all(profile, run=run_cmd, home=None):
         ok = _version_key(match.group(1)) >= (10, 6)
         rows.append(_row("mariadb", "MariaDB", "", "10.6+", "ok" if ok else "needs_fix", match.group(1)))
 
-    note = "utf8mb4 / utf8mb4_unicode_ci in 99-frappe.cnf"
+    note = f"utf8mb4 / utf8mb4_unicode_ci in {os.path.basename(cnf_path(system))}"
     rc, out = run(["my_print_defaults", "mysqld", "server", "mariadb", "mariadbd"], env)
     if rc != 0:
         rows.append(_row("charset", "MariaDB charset", note, "utf8mb4", "missing"))
@@ -142,6 +183,12 @@ def detect_all(profile, run=run_cmd, home=None):
     return rows
 
 
+def cnf_path(system=None):
+    if is_mac(system):
+        return os.path.join(brew_prefix(), "etc/my.cnf.d/99-frappe.cnf")
+    return CNF_PATH
+
+
 def ubuntu_version():
     try:
         with open("/etc/os-release") as fh:
@@ -155,13 +202,43 @@ def _cmd(argv, sudo=False, input=None):
     return {"argv": argv, "sudo": sudo, "input": input}
 
 
-def install_commands(check_id, profile, home=None, ubuntu=None):
-    python = f"python{profile['python']}"
-    node = profile["node"]
+def _nvm_commands(node):
     nvm = ('export NVM_DIR="$HOME/.nvm"; '
            f'[ -s "$NVM_DIR/nvm.sh" ] || curl -fsSL {NVM_INSTALL} | bash; '
            f'. "$NVM_DIR/nvm.sh" && nvm install {node}')
     npm = f'. "$HOME/.nvm/nvm.sh" && nvm exec {node} npm install -g yarn@1'
+    return {"node": [_cmd(["bash", "-c", nvm])], "yarn": [_cmd(["bash", "-c", npm])]}
+
+
+def _mac_install_commands(profile, arch=None):
+    """Homebrew refuses to run as root, so only the wkhtmltopdf package needs sudo."""
+    brew = ["brew", "install"]
+    pkg = os.path.join(tempfile.gettempdir(), os.path.basename(WKHTMLTOPDF_PKG))
+    wkhtmltopdf = [_cmd(["curl", "-fsSL", "-o", pkg, WKHTMLTOPDF_PKG]),
+                   _cmd(["installer", "-pkg", pkg, "-target", "/"], sudo=True)]
+    if (arch or os.uname().machine) == "arm64":
+        wkhtmltopdf.insert(0, _cmd(["softwareupdate", "--install-rosetta", "--agree-to-license"], sudo=True))
+    path = cnf_path("darwin")
+    return {
+        "build": [_cmd(brew + ["git", *BREW_PACKAGES])],
+        "python": [_cmd(brew + [f"python@{profile['python']}"])],
+        "mariadb": [_cmd(brew + ["mariadb"]), _cmd(["brew", "services", "start", "mariadb"])],
+        "charset": [
+            _cmd(["mkdir", "-p", os.path.dirname(path)]),
+            _cmd(["tee", path], input=CNF),
+            _cmd(["brew", "services", "restart", "mariadb"]),
+        ],
+        "redis": [_cmd(brew + ["redis"])],
+        "wkhtmltopdf": wkhtmltopdf,
+        "bench": [_cmd(brew + ["pipx"]), _cmd(["pipx", "install", "frappe-bench"])],
+        **_nvm_commands(profile["node"]),
+    }
+
+
+def install_commands(check_id, profile, home=None, ubuntu=None, system=None, arch=None):
+    if is_mac(system):
+        return _mac_install_commands(profile, arch)[check_id]
+    python = f"python{profile['python']}"
     commands = {
         "build": [_cmd(APT + BUILD_PACKAGES, sudo=True)],
         "python": [
@@ -175,9 +252,8 @@ def install_commands(check_id, profile, home=None, ubuntu=None):
             _cmd(["systemctl", "restart", "mariadb"], sudo=True),
         ],
         "redis": [_cmd(APT + ["redis-server"], sudo=True)],
-        "node": [_cmd(["bash", "-c", nvm])],
-        "yarn": [_cmd(["bash", "-c", npm])],
         "wkhtmltopdf": [_cmd(APT + ["xvfb", "libfontconfig", "wkhtmltopdf"], sudo=True)],
+        **_nvm_commands(profile["node"]),
     }
     if _version_key(ubuntu if ubuntu is not None else ubuntu_version()) >= (23, 4):
         commands["bench"] = [_cmd(APT + ["pipx"], sudo=True), _cmd(["pipx", "install", "frappe-bench"])]
@@ -214,9 +290,12 @@ def check_sudo(password):
 def install(check_id, profile, sudo_password, home=None):
     """Install or fix one prerequisite. Returns {"ok", "log", "error"}."""
     commands = install_commands(check_id, profile, home)
+    env = build_env(profile["node"], home)
+    if any(c["argv"][0] == "brew" for c in commands) and not shutil.which("brew", path=env["PATH"]):
+        return {"ok": False, "error": "command_failed",
+                "log": "Homebrew is not installed. Install it from https://brew.sh, then re-check."}
     if any(c["sudo"] for c in commands) and not check_sudo(sudo_password or ""):
         return {"ok": False, "log": "", "error": "wrong_sudo_password"}
-    env = build_env(profile["node"], home)
     passwordless = sudo_is_passwordless()
     log = []
     for command in commands:
@@ -248,7 +327,9 @@ def set_mariadb_root(sudo_password, password):
     """Give MariaDB's root user a password, through sudo. The SQL goes on stdin, not argv."""
     if not check_sudo(sudo_password or ""):
         return {"ok": False, "error": "wrong_sudo_password", "log": ""}
-    argv, stdin = sudo_call(["mariadb"], sudo_password or "", root_password_sql(password), sudo_is_passwordless())
+    # sudo may reset PATH, which would hide a Homebrew MariaDB, so the client goes by full path.
+    client = shutil.which("mariadb", path=_with_system_dirs(os.environ.get("PATH", ""))) or "mariadb"
+    argv, stdin = sudo_call([client], sudo_password or "", root_password_sql(password), sudo_is_passwordless())
     rc, out = run_cmd(argv, input=stdin, timeout=30)
     if rc != 0:
         return {"ok": False, "error": "command_failed", "log": "MariaDB rejected the statement."}

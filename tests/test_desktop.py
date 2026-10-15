@@ -23,10 +23,32 @@ class EntryTest(unittest.TestCase):
 
     def test_install_writes_the_entry_and_icon_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = desktop.install(str(ROOT), applications_dir=tmp)
+            path = desktop.install(str(ROOT), applications_dir=tmp, system="linux")
             self.assertEqual(path, os.path.join(tmp, "bench-wizard.desktop"))
             self.assertIn("--app", Path(path).read_text())
         self.assertTrue((ROOT / "bench_wizard/web/icon.svg").exists())
+
+
+class MacTest(unittest.TestCase):
+    def test_install_builds_an_app_bundle_that_runs_start_sh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = desktop.install("/opt/bench wizard", applications_dir=tmp, system="darwin")
+            self.assertEqual(bundle, os.path.join(tmp, "Bench Wizard.app"))
+            plist = Path(bundle, "Contents/Info.plist").read_text()
+            self.assertIn("<string>bench-wizard</string>", plist)
+            launcher = Path(bundle, "Contents/MacOS/bench-wizard")
+            self.assertTrue(os.access(launcher, os.X_OK))
+            self.assertIn('exec "/opt/bench wizard/start.sh" --app', launcher.read_text())
+            self.assertIn("brew\" shellenv", launcher.read_text())
+
+    def test_finds_chrome_inside_applications(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(desktop.find_browser("darwin", [tmp]))
+            exe = Path(tmp, "Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+            exe.parent.mkdir(parents=True)
+            exe.write_text("")
+            exe.chmod(0o755)
+            self.assertEqual(desktop.find_browser("darwin", [tmp]), str(exe))
 
 
 class InstanceTest(unittest.TestCase):
