@@ -47,7 +47,8 @@ python3 -m unittest discover -s tests
 Install [Homebrew](https://brew.sh) first; the wizard installs everything else through it, as your user.
 Homebrew no longer packages wkhtmltopdf, so the wizard installs the upstream `.pkg` with sudo; it is an Intel
 build and runs under Rosetta on Apple silicon. MariaDB runs as a Homebrew service, and the charset settings go to
-`$(brew --prefix)/etc/my.cnf.d/99-frappe.cnf`. In `--app` mode the wizard keeps running until you quit the
+`$(brew --prefix)/etc/my.cnf.d/99-frappe.cnf`. The app icon is `bench_wizard/web/icon.icns`, built from
+`icon-mac.svg` (render it at 1024px, make an `.iconset` with `sips`, then run `iconutil -c icns`). In `--app` mode the wizard keeps running until you quit the
 browser window with ⌘Q, since closing a window does not quit a Mac app.
 
 ## Notes
