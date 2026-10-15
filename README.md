@@ -1,6 +1,6 @@
 # Bench Wizard
 
-A local web wizard that sets up a Frappe bench (version 15 or 16) on Ubuntu: it checks
+A local web wizard that sets up a Frappe bench (version 15 or 16) on Ubuntu or macOS: it checks
 prerequisites, installs what is missing, then runs `bench init`, `get-app`, `new-site`
 and `install-app` for the apps you choose, optionally restoring a database backup.
 
@@ -10,14 +10,15 @@ Python 3.10+ standard library only. No build step, no dependencies.
 
 ```bash
 ./start.sh                                # or: python3 -m bench_wizard
-python3 -m bench_wizard --install-desktop # adds an app-menu icon
+python3 -m bench_wizard --install-desktop # adds an app-menu icon (on a Mac: ~/Applications/Bench Wizard.app)
 ```
 
 It opens `http://127.0.0.1:<port>/` in your browser (local only, token protected).
 
 ## What it does
 
-- **System check:** Python, Node (nvm), MariaDB, Redis, wkhtmltopdf and the rest; installs missing ones with sudo.
+- **System check:** Python, Node (nvm), MariaDB, Redis, wkhtmltopdf and the rest; installs missing ones with
+  `apt` and sudo on Ubuntu, or Homebrew on a Mac.
 - **Apps:** pick from `catalog.json`, paste a JSON list of `{url, branch}` (branches may be tags),
   or add a custom repo. Dependencies are read from each app's `pyproject.toml` and `hooks.py`
   and installed first. Private HTTPS URLs may carry a token; it is passed to git through the
@@ -40,6 +41,14 @@ The wizard always creates a new bench folder; it does not modify existing benche
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+## macOS
+
+Install [Homebrew](https://brew.sh) first; the wizard installs everything else through it, as your user.
+Homebrew no longer packages wkhtmltopdf, so the wizard installs the upstream `.pkg` with sudo; it is an Intel
+build and runs under Rosetta on Apple silicon. MariaDB runs as a Homebrew service, and the charset settings go to
+`$(brew --prefix)/etc/my.cnf.d/99-frappe.cnf`. In `--app` mode the wizard keeps running until you quit the
+browser window with ⌘Q, since closing a window does not quit a Mac app.
 
 ## Notes
 

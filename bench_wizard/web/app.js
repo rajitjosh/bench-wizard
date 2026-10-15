@@ -9,7 +9,7 @@ const S = {
   siteData: 'new',
   restore: { sql: '', public: '', private: '', backup_key: '', site_key: '', mute_emails: true, pause_scheduler: true },
   backup: null, backupMsg: '', backupPath: '',
-  checks: null, checksVersion: '', checking: false, sudo: '', installing: '', installLogs: {}, installMsg: '',
+  checks: null, mac: false, checksVersion: '', checking: false, sudo: '', installing: '', installLogs: {}, installMsg: '',
   toolsInstalled: false, rootPw: '', rootOk: null, rootMsg: '', rootBusy: false,
   apps: {}, appsKey: '', custom: { repo: '', branch: '' }, customMsg: '', customBusy: false, depWarn: null,
   importText: '', importBusy: false, importMsg: '', importErrors: [],
@@ -214,7 +214,9 @@ function viewCheck() {
   const fix = bad.length - missing;
   const summary = [missing ? missing + ' missing' : '', fix ? fix + ' needs fix' : ''].filter(Boolean).join(', ');
   const install = !bad.length ? '' : `<section class="card">
-    <div class="row"><h2>${esc(summary)}</h2><span class="lead small">Root commands run through <span class="mono">sudo</span>; nvm, Node, yarn and bench install as you.</span></div>
+    <div class="row"><h2>${esc(summary)}</h2><span class="lead small">${S.mac
+      ? 'Homebrew, nvm and bench install as you; only wkhtmltopdf (and Rosetta on Apple silicon) needs <span class="mono">sudo</span>.'
+      : 'Root commands run through <span class="mono">sudo</span>; nvm, Node, yarn and bench install as you.'}</span></div>
     <div class="grid2 end">
       ${field('sudo password', 'sudo', { type: 'password', value: S.sudo, placeholder: 'Your account password', hint: 'Kept in memory for this session only, never written to disk' })}
       <div><button class="btn primary" data-act="install" ${S.installing ? 'disabled' : ''}>${S.installing ? '<span class="spin"></span> Installing…' : 'Install missing'}</button></div>
@@ -419,7 +421,8 @@ async function loadChecks(force) {
   if (!force && S.checks && S.checksVersion === S.version) return;
   S.checking = true; S.checks = S.checksVersion === S.version ? S.checks : null; render();
   try {
-    S.checks = (await api('GET', '/api/checks?version=' + encodeURIComponent(S.version))).rows;
+    const res = await api('GET', '/api/checks?version=' + encodeURIComponent(S.version));
+    S.checks = res.rows; S.mac = !!res.mac;
     S.checksVersion = S.version;
   } catch (err) { S.installMsg = err.message; }
   S.checking = false; render();

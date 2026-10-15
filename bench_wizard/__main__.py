@@ -35,7 +35,7 @@ def main():
     args = parser.parse_args()
 
     if args.install_desktop:
-        print("Added to the applications menu:", desktop.install(ROOT))
+        print("Added Bench Wizard to your applications:", desktop.install(ROOT))
         return
 
     existing = desktop.running_instance(INSTANCE)

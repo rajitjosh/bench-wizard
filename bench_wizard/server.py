@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import secrets
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -64,7 +65,8 @@ class App:
         }
 
     def get_checks(self, query, body):
-        return {"rows": self.checks.detect_all(self._profile(query.get("version", "")))}
+        return {"rows": self.checks.detect_all(self._profile(query.get("version", ""))),
+                "mac": sys.platform == "darwin"}
 
     def post_install(self, query, body):
         profile = self._profile(body.get("version", ""))

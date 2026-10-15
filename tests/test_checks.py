@@ -43,7 +43,7 @@ class DetectTest(unittest.TestCase):
 
     def detect(self, table=None, profile=V15, **changes):
         table = dict(ALL_GOOD if table is None else table, **changes)
-        rows = checks.detect_all(profile, run=fake_run(table), home=str(self.home))
+        rows = checks.detect_all(profile, run=fake_run(table), home=str(self.home), system="linux")
         return {r["id"]: r for r in rows}
 
     def test_everything_present(self):
@@ -60,7 +60,7 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(rows["node"]["required"], "18")
 
     def test_nothing_present(self):
-        rows = checks.detect_all(V16, run=fake_run({}), home=str(self.home / "empty"))
+        rows = checks.detect_all(V16, run=fake_run({}), home=str(self.home / "empty"), system="linux")
         self.assertEqual({r["status"] for r in rows}, {"missing"})
         self.assertTrue(all(r["found"] == "" for r in rows))
 
@@ -132,7 +132,7 @@ class NodeBinTest(unittest.TestCase):
             d = Path(home) / ".nvm/versions/node/v18.1.0/bin"
             d.mkdir(parents=True)
             (d / "node").write_text("")
-            env = checks.build_env("18", home, base={"PATH": "/usr/bin", "X": "1"})
+            env = checks.build_env("18", home, base={"PATH": "/usr/bin", "X": "1"}, system="linux")
             self.assertEqual(env["PATH"].split(":")[:3], [checks.SHIMS_DIR, str(d), f"{home}/.local/bin"])
             self.assertTrue(env["PATH"].endswith("/usr/bin"))
             self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
@@ -154,7 +154,7 @@ class ShimTest(unittest.TestCase):
 
 class InstallCommandsTest(unittest.TestCase):
     def cmds(self, check_id, profile=V15, ubuntu="22.04"):
-        return checks.install_commands(check_id, profile, home="/home/u", ubuntu=ubuntu)
+        return checks.install_commands(check_id, profile, home="/home/u", ubuntu=ubuntu, system="linux")
 
     def test_python_uses_deadsnakes_for_the_profile_version(self):
         cmds = self.cmds("python", V16)
@@ -193,6 +193,81 @@ class InstallCommandsTest(unittest.TestCase):
     def test_unknown_check(self):
         with self.assertRaises(KeyError):
             self.cmds("nope")
+
+
+MAC_GOOD = dict(ALL_GOOD, **{
+    "xcode-select": (0, "/Library/Developer/CommandLineTools\n"),
+    "brew": (0, "Homebrew 4.6.0\n"),
+    "git": (0, "git version 2.50.1\n"),
+    "pkg-config": (0, "0.29.2\n"),
+    "mariadbd": (0, "mariadbd  Ver 11.8.2-MariaDB for osx10.20 on arm64 (Homebrew)\n"),
+})
+del MAC_GOOD["dpkg-query"]
+
+
+class MacDetectTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = Path(tmp.name) / ".nvm/versions/node/v18.20.7/bin"
+        d.mkdir(parents=True)
+        (d / "node").write_text("")
+        self.home = tmp.name
+
+    def detect(self, **changes):
+        table = dict(MAC_GOOD, **changes)
+        rows = checks.detect_all(V15, run=fake_run(table), home=self.home, system="darwin")
+        return {r["id"]: r for r in rows}
+
+    def test_everything_present_without_dpkg(self):
+        rows = self.detect()
+        self.assertEqual({r["status"] for r in rows.values()}, {"ok"})
+        self.assertEqual(rows["build"]["title"], "Homebrew and build tools")
+        self.assertEqual(rows["mariadb"]["found"], "11.8.2")
+
+    def test_missing_homebrew_is_named(self):
+        row = self.detect(brew=(127, ""))["build"]
+        self.assertEqual((row["status"], row["found"]), ("missing", "missing: Homebrew"))
+
+    def test_brew_directories_are_on_path_for_apps_started_from_finder(self):
+        env = checks.build_env("18", self.home, base={"PATH": "/usr/bin:/bin"}, system="darwin")
+        self.assertIn("/opt/homebrew/bin", env["PATH"].split(":"))
+        self.assertTrue(env["PATH"].startswith(checks.SHIMS_DIR))
+        linux = checks.build_env("18", self.home, base={"PATH": "/usr/bin:/bin"}, system="linux")
+        self.assertNotIn("/opt/homebrew/bin", linux["PATH"])
+
+
+class MacInstallCommandsTest(unittest.TestCase):
+    def cmds(self, check_id, profile=V15, arch="arm64"):
+        return checks.install_commands(check_id, profile, system="darwin", arch=arch)
+
+    def test_homebrew_never_runs_as_root(self):
+        for check_id in ("build", "python", "mariadb", "charset", "redis", "node", "yarn", "bench"):
+            self.assertFalse(any(c["sudo"] for c in self.cmds(check_id)), check_id)
+
+    def test_python_uses_the_versioned_formula(self):
+        self.assertEqual(self.cmds("python", V16)[0]["argv"], ["brew", "install", "python@3.14"])
+
+    def test_mariadb_is_started_as_a_service(self):
+        self.assertEqual(self.cmds("mariadb")[-1]["argv"], ["brew", "services", "start", "mariadb"])
+
+    def test_charset_goes_to_homebrews_config_dir(self):
+        cmds = self.cmds("charset")
+        self.assertEqual(cmds[1]["argv"][0], "tee")
+        self.assertTrue(cmds[1]["argv"][1].endswith("/etc/my.cnf.d/99-frappe.cnf"))
+        self.assertIn("utf8mb4_unicode_ci", cmds[1]["input"])
+        self.assertEqual(cmds[-1]["argv"], ["brew", "services", "restart", "mariadb"])
+
+    def test_wkhtmltopdf_needs_rosetta_only_on_apple_silicon(self):
+        arm = self.cmds("wkhtmltopdf")
+        self.assertEqual(arm[0]["argv"][0], "softwareupdate")
+        self.assertEqual(arm[-1]["argv"][:2], ["installer", "-pkg"])
+        self.assertTrue(arm[-1]["sudo"])
+        intel = self.cmds("wkhtmltopdf", arch="x86_64")
+        self.assertEqual(intel[0]["argv"][0], "curl")
+
+    def test_bench_uses_pipx(self):
+        self.assertEqual(self.cmds("bench")[-1]["argv"], ["pipx", "install", "frappe-bench"])
 
 
 class SqlTest(unittest.TestCase):
