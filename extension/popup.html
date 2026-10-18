@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Export apps for Bench Wizard</h1>
+  <p id="msg" class="muted">Reading your sites…</p>
+  <div id="pick" hidden>
+    <label for="site">Site</label>
+    <select id="site"></select>
+  </div>
+  <div id="out" hidden>
+    <p id="notes" class="muted"></p>
+    <textarea id="json" readonly spellcheck="false"></textarea>
+    <div class="row">
+      <button id="send">Send to Bench Wizard</button>
+      <button id="copy" class="ghost">Copy JSON</button>
+      <button id="download" class="ghost">Download</button>
+    </div>
+    <p id="sent" class="muted small">The list goes to the wizard's Apps step for you to check. Or copy it and paste it into “Paste an app list”.</p>
+  </div>
+  <script src="export.js"></script>
+  <script src="wizard.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

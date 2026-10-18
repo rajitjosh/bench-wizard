@@ -16,11 +16,16 @@ from . import catalog as catalog_mod
 from . import checks as checks_mod
 from concurrent.futures import ThreadPoolExecutor
 
-from . import deps, gitauth, planner, preflight as preflight_mod
+from . import deps, desktop, gitauth, planner, preflight as preflight_mod
 from .runner import Runner
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 MAX_BODY = 1024 * 1024
+EXTENSION_DIR = os.path.join(os.path.dirname(os.path.dirname(WEB_DIR)), "extension")
+# The Frappe Cloud extension finds the wizard by trying these ports (extension/wizard.js), so they come first.
+EXTENSION_PORTS = range(47615, 47620)
+EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://")
+EXPORT_KEYS = {"app": str, "url": str, "branch": str, "commit": str, "tag": str, "private": bool}
 
 
 class ApiError(Exception):
@@ -31,7 +36,8 @@ class ApiError(Exception):
 
 class App:
     def __init__(self, catalog, state_root, token=None, checks=checks_mod, resolve=deps.resolve,
-                 preflight=preflight_mod.run, inspect_app=deps.inspect, inspect_backup=backup_mod.inspect):
+                 preflight=preflight_mod.run, inspect_app=deps.inspect, inspect_backup=backup_mod.inspect,
+                 reveal=desktop.reveal, github_ssh_host=None):
         self.catalog = catalog
         self.state_root = state_root
         self.token = token or secrets.token_urlsafe(24)
@@ -40,7 +46,14 @@ class App:
         self.preflight = preflight
         self.inspect_app = inspect_app
         self.inspect_backup = inspect_backup
+        self.reveal = reveal
+        self.extension = None  # {"version"} once the Frappe Cloud extension has checked in
+        self.inbox = None  # the last app list the extension sent, until the page picks it up
+        self.show_window = None  # set in app mode: brings back the wizard's window, False if it has none
         self.git_creds = {}  # URL prefix -> "user:token"; memory only, for this session
+        if github_ssh_host and not gitauth.SSH_HOST.fullmatch(github_ssh_host):
+            raise ValueError(f"not an SSH host alias: {github_ssh_host!r}")
+        self.github_ssh_host = github_ssh_host or None  # e.g. "github-work" from ~/.ssh/config
         self.pending = None
         self.runner = None
         self.run_id = None
@@ -62,6 +75,7 @@ class App:
             "default_preset": catalog_mod.default_preset(self.catalog),
             "home": os.path.expanduser("~"),
             "wizard_dir": os.path.dirname(os.path.dirname(WEB_DIR)),
+            "github_ssh_host": self.github_ssh_host,
         }
 
     def get_checks(self, query, body):
@@ -86,10 +100,13 @@ class App:
             self.git_creds[cred["prefix"]] = cred["userinfo"]
         return clean
 
+    def _git_env(self):
+        return gitauth.env(self.git_creds, self.github_ssh_host)
+
     def _inspect(self, url, branch):
         repo = self._clean(url)
         try:
-            info = self.inspect_app(repo, branch, env=gitauth.env(self.git_creds))
+            info = self.inspect_app(repo, branch, env=self._git_env())
         except deps.InspectError as exc:
             return {"ok": False, "repo": repo, "branch": branch, "error": gitauth.scrub(str(exc))}
         return {"ok": True, "name": info.app_name, "title": info.app_title, "description": info.app_description,
@@ -121,6 +138,38 @@ class App:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "apps": info.apps, "frappe_major": info.frappe_major}
 
+    # -- Frappe Cloud extension ----------------------------------------
+    # hello and send come from the extension, not the page: they need no token but must carry an extension
+    # Origin, which web pages cannot set. send only fills the page's import box; nothing is cloned until
+    # the user clicks "Add apps from list".
+    def post_extension_hello(self, query, body):
+        self.extension = {"version": str(body.get("version", ""))[:20]}
+        return {"app": "bench-wizard"}
+
+    def post_extension_send(self, query, body):
+        items = body.get("apps")
+        if not isinstance(items, list) or not all(isinstance(i, dict) and isinstance(i.get("url"), str)
+                                                  for i in items):
+            raise ApiError(400, 'expected a list of {"url": ..., "branch": ...}')
+        apps = [{k: i[k] for k, kind in EXPORT_KEYS.items() if isinstance(i.get(k), kind)} for i in items[:200]]
+        self.inbox = {"site": str(body.get("site", ""))[:200], "apps": apps}
+        if self.extension is None:
+            self.extension = {"version": ""}
+        return {"ok": True}
+
+    def get_extension(self, query, body):
+        inbox, self.inbox = self.inbox, None
+        return {"connected": self.extension is not None,
+                "version": (self.extension or {}).get("version", ""), "folder": EXTENSION_DIR, "inbox": inbox}
+
+    def post_extension_reveal(self, query, body):
+        return {"ok": self.reveal(EXTENSION_DIR) is not False, "folder": EXTENSION_DIR}
+
+    # -- window --------------------------------------------------------
+    def post_window_show(self, query, body):
+        """Opening the app again asks this first; it opens a new window only when this says False."""
+        return {"shown": bool(self.show_window and self.show_window())}
+
     # -- plan and run --------------------------------------------------
     def post_plan(self, query, body):
         version = body.get("version", "")
@@ -131,7 +180,7 @@ class App:
         selected = {a["name"]: {"repo": self._clean(a["repo"]), "branch": a["branch"],
                                 "title": a.get("title") or a["name"], "added_for": None}
                     for a in body.get("apps", []) if a.get("name") != "frappe"}
-        git_env = gitauth.env(self.git_creds)
+        git_env = self._git_env()
         resolution = self.resolve(selected, self.catalog, version,
                                   inspect_fn=lambda repo, branch: self.inspect_app(repo, branch, env=git_env))
 
@@ -242,6 +291,11 @@ class App:
         ("POST", "/api/apps/inspect"): post_inspect_app,
         ("POST", "/api/apps/import"): post_import_apps,
         ("POST", "/api/backup/inspect"): post_inspect_backup,
+        ("POST", "/api/extension/hello"): post_extension_hello,
+        ("POST", "/api/extension/send"): post_extension_send,
+        ("GET", "/api/extension"): get_extension,
+        ("POST", "/api/extension/reveal"): post_extension_reveal,
+        ("POST", "/api/window/show"): post_window_show,
         ("POST", "/api/plan"): post_plan,
         ("POST", "/api/run"): post_run,
         ("GET", "/api/run"): get_run,
@@ -250,6 +304,7 @@ class App:
         ("POST", "/api/run/cancel"): post_cancel,
         ("POST", "/api/run/dismiss"): post_dismiss,
     }
+    EXTENSION_ROUTES = {("POST", "/api/extension/hello"), ("POST", "/api/extension/send")}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -292,7 +347,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._token_ok(query.get("token", "")):
                 return self._send(403, {"error": "forbidden"})
             return self._events()
-        if not self._token_ok(self.headers.get("X-Token", "")):
+        if (method, url.path) in App.EXTENSION_ROUTES:
+            if not self.headers.get("Origin", "").startswith(EXTENSION_ORIGINS):
+                return self._send(403, {"error": "forbidden"})
+        elif not self._token_ok(self.headers.get("X-Token", "")):
             return self._send(403, {"error": "forbidden"})
         route = App.ROUTES.get((method, url.path))
         if route is None:
@@ -346,6 +404,18 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             if runner:
                 runner.unsubscribe(q)
+
+
+def listen(app, port=0):
+    """A server on `port`, or when that is 0 on the first free extension port, else any free port."""
+    if port:
+        return make_server(app, port)
+    for candidate in EXTENSION_PORTS:
+        try:
+            return make_server(app, candidate)
+        except OSError:
+            pass
+    return make_server(app, 0)
 
 
 def make_server(app, port=0):

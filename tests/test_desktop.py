@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -38,7 +39,10 @@ class MacTest(unittest.TestCase):
             self.assertIn("<string>bench-wizard</string>", plist)
             launcher = Path(bundle, "Contents/MacOS/bench-wizard")
             self.assertTrue(os.access(launcher, os.X_OK))
-            self.assertIn(f'exec "{ROOT}/start.sh" --app', launcher.read_text())
+            script = launcher.read_text()
+            self.assertIn(f'"{ROOT}/start.sh" --app </dev/null', script)
+            self.assertTrue(script.rstrip().endswith("&"))  # runs in the background so the app process exits
+            self.assertNotIn("exec ", script)
             self.assertIn("<key>CFBundleIconFile</key><string>icon</string>", plist)
             self.assertEqual(Path(bundle, "Contents/Resources/icon.icns").read_bytes()[:4], b"icns")
             self.assertIn("brew\" shellenv", launcher.read_text())
@@ -125,3 +129,109 @@ class AppModeTest(unittest.TestCase):
             finally:
                 first.kill()
                 first.wait()
+
+
+# Stands in for the browser: answers DevTools commands on fds 3 and 4 like Chrome does.
+FAKE_BROWSER = r"""
+import json, os, sys
+state = json.loads(sys.argv[1])
+buf = b""
+while True:
+    chunk = os.read(3, 65536)
+    if not chunk:
+        break
+    buf += chunk
+    while b"\0" in buf:
+        raw, buf = buf.split(b"\0", 1)
+        msg = json.loads(raw)
+        os.write(4, json.dumps({"method": "Some.event"}).encode() + b"\0")  # events come between replies
+        result = state.get(msg["method"], {})
+        if msg["method"] == "Browser.setWindowBounds":
+            result = {"seen": msg["params"]}
+            state["Browser.getWindowForTarget"]["bounds"] = msg["params"]["bounds"]
+        os.write(4, json.dumps({"id": msg["id"], "result": result}).encode() + b"\0")
+"""
+
+
+class DevToolsTest(unittest.TestCase):
+    def start(self, state):
+        devtools = desktop.DevTools()
+        proc = subprocess.Popen([sys.executable, "-c", FAKE_BROWSER, json.dumps(state)],
+                                close_fds=False, preexec_fn=devtools.child_setup)
+        devtools.started()
+        self.addCleanup(proc.wait)
+        self.addCleanup(os.close, devtools._to_browser)
+        return devtools, proc
+
+    def state(self, url, window_state):
+        return {"Target.getTargets": {"targetInfos": [
+                    {"type": "page", "url": "chrome://newtab/", "targetId": "other"},
+                    {"type": "page", "url": url, "targetId": "wiz"}]},
+                "Browser.getWindowForTarget": {"windowId": 7, "bounds": {"windowState": window_state}}}
+
+    def test_command_flag(self):
+        self.assertIn("--remote-debugging-pipe", desktop.window_command("chrome", "http://x", "/s", devtools=True))
+        self.assertNotIn("--remote-debugging-pipe", desktop.window_command("chrome", "http://x", "/s"))
+
+    def test_minimised_wizard_window_is_restored(self):
+        devtools, _ = self.start(self.state("http://127.0.0.1:47615/?token=t", "minimized"))
+        self.assertTrue(desktop.show_page(devtools, "http://127.0.0.1:47615/"))
+        window = devtools.call("Browser.getWindowForTarget", {"targetId": "wiz"})
+        self.assertEqual(window["bounds"], {"windowState": "normal"})
+
+    def test_visible_window_is_left_as_it_is(self):
+        devtools, _ = self.start(self.state("http://127.0.0.1:47615/", "fullscreen"))
+        self.assertTrue(desktop.show_page(devtools, "http://127.0.0.1:47615/"))
+        window = devtools.call("Browser.getWindowForTarget", {"targetId": "wiz"})
+        self.assertEqual(window["bounds"], {"windowState": "fullscreen"})
+
+    def test_no_wizard_page_means_nothing_to_show(self):
+        devtools, _ = self.start(self.state("http://127.0.0.1:9/", "normal"))
+        self.assertFalse(desktop.show_page(devtools, "http://127.0.0.1:47615/"))
+
+    def test_a_quit_browser_means_nothing_to_show(self):
+        devtools, proc = self.start({})
+        proc.kill()
+        proc.wait()
+        self.assertFalse(desktop.show_page(devtools, "http://127.0.0.1:47615/"))
+
+    def test_activate(self):
+        ok = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+        self.assertTrue(desktop.activate(42, run=ok))
+
+        def missing(argv, **kw):
+            raise FileNotFoundError("osascript")
+        self.assertFalse(desktop.activate(42, run=missing))
+
+
+class LinuxTest(unittest.TestCase):
+    def test_snap_browsers_are_recognised(self):
+        self.assertEqual(desktop.snap_name("/snap/bin/chromium"), "chromium")
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = Path(tmp, "chromium-browser")  # Ubuntu's /usr/bin/chromium-browser
+            shim.write_text("#!/bin/sh\nexec /snap/bin/chromium \"$@\"\n")
+            self.assertEqual(desktop.snap_name(str(shim)), "chromium")
+            binary = Path(tmp, "google-chrome")
+            binary.write_bytes(b"\x7fELF.../snap/bin/chromium...")
+            self.assertIsNone(desktop.snap_name(str(binary)))
+        self.assertIsNone(desktop.snap_name("/nonexistent/chrome"))
+
+    def test_snap_browser_gets_a_profile_it_can_use_and_no_pipe(self):
+        command = desktop.window_command("/snap/bin/chromium", "http://x", "/state", devtools=True)
+        self.assertIn(f"--user-data-dir={os.path.expanduser('~/snap/chromium/common/bench-wizard-window-profile')}",
+                      command)
+        self.assertNotIn("--remote-debugging-pipe", command)
+        command = desktop.window_command("/usr/bin/google-chrome", "http://x", "/state", devtools=True)
+        self.assertIn("--user-data-dir=/state/window-profile", command)
+        self.assertIn("--remote-debugging-pipe", command)
+
+    def test_reveal_without_a_file_manager(self):
+        real = subprocess.Popen
+
+        def missing(*a, **kw):
+            raise FileNotFoundError("xdg-open")
+        subprocess.Popen = missing
+        try:
+            self.assertFalse(desktop.reveal("/tmp", system="linux"))
+        finally:
+            subprocess.Popen = real

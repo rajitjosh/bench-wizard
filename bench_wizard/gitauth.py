@@ -20,18 +20,29 @@ def split(url):
     return f"{scheme}{host}/{path}", {"prefix": f"{scheme}{host}/{owner}/", "userinfo": userinfo}
 
 
-def env(creds):
+GITHUB_URLS = ("https://github.com/", "git@github.com:", "ssh://git@github.com/")
+SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def env(creds, github_ssh_host=None):
     """Environment that makes git use each credential for URLs under its prefix.
 
-    `creds` maps a URL prefix (https://host/owner/) to "user:token".
+    `creds` maps a URL prefix (https://host/owner/) to "user:token". With `github_ssh_host`, an SSH host
+    alias from ~/.ssh/config, every other github.com URL goes through that alias and so its key. A token
+    still wins for its owner: git applies the longest matching prefix.
     """
-    out = {}
-    for i, (prefix, userinfo) in enumerate(creds.items()):
+    rules = []
+    for prefix, userinfo in creds.items():
         scheme, rest = prefix.split("://", 1)
-        out[f"GIT_CONFIG_KEY_{i}"] = f"url.{scheme}://{userinfo}@{rest}.insteadOf"
-        out[f"GIT_CONFIG_VALUE_{i}"] = prefix
+        rules.append((f"url.{scheme}://{userinfo}@{rest}.insteadOf", prefix))
+    if github_ssh_host:
+        rules += [(f"url.git@{github_ssh_host}:.insteadOf", url) for url in GITHUB_URLS]
+    out = {}
+    for i, (key, value) in enumerate(rules):
+        out[f"GIT_CONFIG_KEY_{i}"] = key
+        out[f"GIT_CONFIG_VALUE_{i}"] = value
     if out:
-        out["GIT_CONFIG_COUNT"] = str(len(creds))
+        out["GIT_CONFIG_COUNT"] = str(len(rules))
     return out
 
 
