@@ -1,3 +1,5 @@
+import os
+import subprocess
 import unittest
 
 from bench_wizard import gitauth
@@ -49,3 +51,27 @@ class ScrubTest(unittest.TestCase):
     def test_scrub_leaves_other_text_alone(self):
         self.assertEqual(gitauth.scrub("email me at a@b.com about https://x.org/y"),
                          "email me at a@b.com about https://x.org/y")
+
+
+class GithubSshHostTest(unittest.TestCase):
+    def resolve(self, env, url):
+        """The URL git would really fetch from, with the wizard's environment."""
+        out = subprocess.run(["git", "ls-remote", "--get-url", url], env=dict(os.environ, **env),
+                             capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+
+    def test_every_github_url_goes_through_the_alias(self):
+        env = gitauth.env({}, "github-work")
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+        for url in ("https://github.com/frappe/erpnext", "git@github.com:acme/app.git",
+                    "ssh://git@github.com/acme/app.git"):
+            self.assertTrue(self.resolve(env, url).startswith("git@github-work:"), url)
+        self.assertEqual(self.resolve(env, "https://gitlab.com/x/y"), "https://gitlab.com/x/y")
+
+    def test_a_token_still_wins_for_its_owner(self):
+        env = gitauth.env({"https://github.com/acme/": f"alice:{T}"}, "github-work")
+        self.assertEqual(self.resolve(env, "https://github.com/acme/app"), f"https://alice:{T}@github.com/acme/app")
+        self.assertEqual(self.resolve(env, "https://github.com/other/app"), "git@github-work:other/app")
+
+    def test_no_alias_no_rewrite(self):
+        self.assertEqual(gitauth.env({}, None), {})

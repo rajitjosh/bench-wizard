@@ -72,21 +72,24 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
         self.checks = FakeChecks()
+        self.revealed = []
         self.app = server.App(
             catalog.load(ROOT / "catalog.json"), state_root=str(self.tmp / "state"), token="tok",
             checks=self.checks, resolve=fake_resolve, preflight=fake_preflight,
-            inspect_app=fake_inspect_app, inspect_backup=fake_inspect_backup)
+            inspect_app=fake_inspect_app, inspect_backup=fake_inspect_backup, reveal=self.revealed.append)
         self.httpd = server.make_server(self.app, port=0)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, args=(0.02,), daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
 
-    def request(self, method, path, body=None, token="tok", host=None):
+    def request(self, method, path, body=None, token="tok", host=None, origin=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
         headers = {"Host": host or f"127.0.0.1:{self.port}"}
         if token:
             headers["X-Token"] = token
+        if origin:
+            headers["Origin"] = origin
         data = json.dumps(body).encode() if body is not None else None
         if data:
             headers["Content-Type"] = "application/json"
@@ -362,3 +365,97 @@ class ServerTest(unittest.TestCase):
         conn.request("GET", "/api/run/events")
         self.assertEqual(conn.getresponse().status, 403)
         conn.close()
+
+    # -- Frappe Cloud extension ----------------------------------------
+    EXT = "chrome-extension://abcdefghijklmnop"
+
+    def test_extension_calls_need_an_extension_origin_not_the_token(self):
+        for origin in (None, "http://evil.example", f"http://127.0.0.1:{self.port}"):
+            self.assertEqual(self.request("POST", "/api/extension/hello", {"version": "1"}, token=None,
+                                          origin=origin)[0], 403, origin)
+        self.assertEqual(self.request("POST", "/api/extension/hello", {}, token="tok")[0], 403)
+        status, body = self.request("POST", "/api/extension/hello", {"version": "1.1.0"}, token=None, origin=self.EXT)
+        self.assertEqual((status, body), (200, {"app": "bench-wizard"}))
+        self.assertEqual(self.request("GET", "/api/extension", token=None)[0], 403)
+
+    def test_extension_status(self):
+        status = self.request("GET", "/api/extension")[1]
+        self.assertFalse(status["connected"])
+        self.assertTrue(status["folder"].endswith("extension"))
+        self.request("POST", "/api/extension/hello", {"version": "1.1.0"}, token=None, origin="moz-extension://x")
+        status = self.request("GET", "/api/extension")[1]
+        self.assertEqual((status["connected"], status["version"], status["inbox"]), (True, "1.1.0", None))
+
+    def test_extension_send_is_cleaned_and_delivered_once(self):
+        apps = [{"app": "frappe", "url": "https://github.com/frappe/frappe", "branch": "version-15", "commit": "a1"},
+                {"app": "acme", "url": "https://github.com/acme/acme", "branch": "main", "private": True,
+                 "extra": "dropped", "tag": 5}]
+        status, _ = self.request("POST", "/api/extension/send", {"site": "a.frappe.cloud", "apps": apps},
+                                 token=None, origin=self.EXT)
+        self.assertEqual(status, 200)
+        got = self.request("GET", "/api/extension")[1]
+        self.assertTrue(got["connected"])
+        self.assertEqual(got["inbox"], {"site": "a.frappe.cloud", "apps": [
+            apps[0], {"app": "acme", "url": "https://github.com/acme/acme", "branch": "main", "private": True}]})
+        self.assertIsNone(self.request("GET", "/api/extension")[1]["inbox"])
+
+    def test_extension_send_rejects_a_bad_list(self):
+        for apps in (None, "x", [{"branch": "main"}], [{"url": 3}]):
+            self.assertEqual(self.request("POST", "/api/extension/send", {"apps": apps}, token=None,
+                                          origin=self.EXT)[0], 400, apps)
+
+    def test_window_show_uses_the_app_mode_hook(self):
+        self.assertEqual(self.request("POST", "/api/window/show", {})[1], {"shown": False})
+        self.app.show_window = lambda: True
+        self.assertEqual(self.request("POST", "/api/window/show", {})[1], {"shown": True})
+        self.assertEqual(self.request("POST", "/api/window/show", {}, token=None)[0], 403)
+
+    def test_reveal_extension_folder(self):
+        status, body = self.request("POST", "/api/extension/reveal", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.revealed, [server.EXTENSION_DIR])
+        self.assertTrue(Path(server.EXTENSION_DIR, "manifest.json").is_file())
+        self.app.reveal = lambda folder: False  # no file manager, e.g. WSL
+        self.assertEqual(self.request("POST", "/api/extension/reveal", {})[1]["ok"], False)
+
+
+class ListenTest(unittest.TestCase):
+    def test_prefers_extension_ports_and_falls_back(self):
+        servers = []
+        try:
+            for _ in range(len(server.EXTENSION_PORTS) + 1):
+                servers.append(server.listen(None))
+            ports = [s.server_address[1] for s in servers]
+            self.assertEqual(len(set(ports)), len(ports))
+            self.assertIn(ports[0], server.EXTENSION_PORTS)
+            self.assertNotIn(ports[-1], server.EXTENSION_PORTS)  # every preferred port is taken by now
+        finally:
+            for s in servers:
+                s.server_close()
+
+
+class GithubSshHostServerTest(unittest.TestCase):
+    def make(self, host):
+        return server.App(catalog.load(ROOT / "catalog.json"), state_root="/nonexistent", token="tok",
+                          inspect_app=self.record, github_ssh_host=host)
+
+    def record(self, repo, branch, env=None):
+        self.envs.append(env)
+        return AppInfo("custom_app", "Custom App", "", "", {})
+
+    def test_alias_reaches_git_and_catalog(self):
+        self.envs = []
+        app = self.make("github-work")
+        self.assertEqual(app.get_catalog({}, {})["github_ssh_host"], "github-work")
+        app.post_inspect_app({}, {"repo": "https://github.com/acme/app", "branch": "main"})
+        self.assertIn("url.git@github-work:.insteadOf", self.envs[0].values())
+
+    def test_without_alias_git_env_is_unchanged(self):
+        self.envs = []
+        self.make(None).post_inspect_app({}, {"repo": "https://github.com/acme/app", "branch": "main"})
+        self.assertEqual(self.envs[0], {})
+
+    def test_bad_alias_is_refused(self):
+        for host in ("github work", "-oProxyCommand=x", "a:b"):
+            with self.assertRaises(ValueError):
+                self.make(host)

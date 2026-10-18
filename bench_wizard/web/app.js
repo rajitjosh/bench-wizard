@@ -12,7 +12,7 @@ const S = {
   checks: null, mac: false, checksVersion: '', checking: false, sudo: '', installing: '', installLogs: {}, installMsg: '',
   toolsInstalled: false, rootPw: '', rootOk: null, rootMsg: '', rootBusy: false,
   apps: {}, appsKey: '', custom: { repo: '', branch: '' }, customMsg: '', customBusy: false, depWarn: null,
-  importText: '', importBusy: false, importMsg: '', importErrors: [],
+  importText: '', importBusy: false, importMsg: '', importErrors: [], ext: null,
   plan: null, planning: false, planMsg: '',
   run: null, activeStep: '', follow: true, logs: {}, cleanup: true, runMsg: '', showPw: false,
 };
@@ -283,12 +283,67 @@ function viewApps() {
     Deselecting it deselects those too.<span class="acts"><button class="btn sm" data-act="dep-all">Deselect all</button><button class="btn sm" data-act="dep-keep">Keep</button></span></span></div>`;
   const names = selectedApps().map(([n]) => n);
   const view = `<div class="head"><h1>Apps</h1><p class="lead">Preset <strong>${esc(S.catalog.presets[S.preset].title)}</strong> on Frappe <strong>${esc(profile().title)}</strong>.
-    Selecting an app also selects what it requires. The install order is worked out from each app's own requirements on the next screen.</p></div>
-    ${warn}<div class="grid2">${cards}${add}</div>${importCard}`;
+    Selecting an app also selects what it requires. The install order is worked out from each app's own requirements on the next screen.</p>
+    ${S.catalog.github_ssh_host ? `<p class="lead small">GitHub repositories are fetched with the SSH key of <span class="mono">${esc(S.catalog.github_ssh_host)}</span> from <span class="mono">~/.ssh/config</span>, set in <span class="mono">~/.config/bench-wizard/settings.json</span>.</p>` : ''}</div>
+    ${warn}<div class="grid2">${cards}${add}</div>${extensionCard()}${importCard}`;
   const footer = `<button class="btn" data-act="back">← Back</button><div class="right">
     <span class="lead small">${names.length} app${names.length === 1 ? '' : 's'} selected: ${esc(names.join(', '))}</span>
     <button class="btn primary" data-act="next">Continue to review ${ARROW}</button></div>`;
   return [view, footer];
+}
+
+// Which browser this page is in, and its extensions page (pages cannot open that address themselves).
+function browserInfo() {
+  const brands = ((navigator.userAgentData && navigator.userAgentData.brands) || []).map((b) => b.brand);
+  const ua = navigator.userAgent;
+  if (navigator.brave) return { name: 'Brave', page: 'brave://extensions' };
+  if (brands.includes('Microsoft Edge') || /Edg\//.test(ua)) return { name: 'Microsoft Edge', page: 'edge://extensions' };
+  if (brands.includes('Google Chrome')) return { name: 'Google Chrome', page: 'chrome://extensions' };
+  if (/Firefox\//.test(ua)) return { name: 'Firefox', page: '' };
+  if (brands.includes('Chromium') || /Chrome\//.test(ua)) return { name: 'a Chromium browser', page: 'chrome://extensions' };
+  return { name: 'Safari', page: '' };
+}
+
+function extensionCard() {
+  const head = (badge) => `<div class="row"><h2>Import from Frappe Cloud</h2>${badge}</div>`;
+  if (!S.ext) return `<section class="card">${head('<span class="badge">Checking…</span>')}</section>`;
+  if (S.ext.connected) {
+    return `<section class="card">${head(`<span class="badge green">Extension connected${S.ext.version ? ' · v' + esc(S.ext.version) : ''}</span>`)}
+      <p class="lead small">In your Frappe Cloud dashboard, open a site, click the Bench Wizard extension and choose <strong>Send to Bench Wizard</strong>.
+      The site's apps, repositories and branches appear under “Paste an app list” below for you to check.</p>
+      <div><a class="btn sm" href="https://cloud.frappe.io/dashboard/sites" target="_blank" rel="noopener">Open Frappe Cloud dashboard</a></div></section>`;
+  }
+  const b = browserInfo();
+  const page = b.page || 'chrome://extensions';
+  const where = b.page ? `This page is open in ${esc(b.name)}.`
+    : `This page is open in ${esc(b.name)}, which cannot load it: use Chrome, Edge or Brave.`;
+  return `<section class="card">${head('<span class="badge">Extension not installed</span>')}
+    <p class="lead small">A browser extension reads a site's apps, repositories and branches from your Frappe Cloud dashboard and sends them here.
+    Install it once, in the browser where you are logged in to Frappe Cloud. ${where}</p>
+    <ol class="olist">
+      <li>Open <span class="mono">${esc(page)}</span> in a new tab. <button class="btn sm" data-act="copy" data-arg="${esc(page)}">Copy address</button></li>
+      <li>Turn on <strong>Developer mode</strong> (top right of that page).</li>
+      <li>Click <strong>Load unpacked</strong> and choose the folder <span class="mono">${esc(tilde(S.ext.folder))}</span>.
+        <button class="btn sm" data-act="reveal-extension">Show folder</button></li>
+    </ol>
+    <span class="hint"><span class="spin"></span> Waiting for the extension. This card updates by itself once it is loaded.</span></section>`;
+}
+
+// While the Apps step is open: notice the extension, and take any app list it sent.
+async function pollExtension() {
+  if (S.step !== 'apps' || document.hidden || !S.catalog) return;
+  let res;
+  try { res = await api('GET', '/api/extension'); } catch (err) { return; }
+  const changed = !S.ext || S.ext.connected !== res.connected || S.ext.version !== res.version;
+  S.ext = { connected: res.connected, version: res.version, folder: res.folder };
+  if (res.inbox) {
+    const n = res.inbox.apps.length;
+    S.importText = JSON.stringify(res.inbox.apps, null, 2);
+    S.importErrors = [];
+    S.importMsg = `Received ${n} app${n === 1 ? '' : 's'} from ${res.inbox.site || 'Frappe Cloud'}. Check the list, then click Add apps from list.`;
+  }
+  if (res.inbox || changed) render();
+  if (res.inbox) document.querySelector('[data-bind=importText]').scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function viewReview() {
@@ -619,6 +674,7 @@ function go(step) {
   S.step = step; S.errors = {}; render(); window.scrollTo(0, 0);
   if (step === 'check') loadChecks(false);
   if (step === 'review') buildPlan();
+  if (step === 'apps') pollExtension();
 }
 
 const NEXT = { project: 'check', check: 'apps', apps: 'review' };
@@ -659,6 +715,12 @@ const ACTIONS = {
     try { await api('POST', '/api/run/dismiss', {}); } catch (err) { /* a running run stays */ }
     Object.assign(S, { run: null, plan: null, logs: {}, step: 'project', reached: 0, folderEdited: false, siteEdited: false, appsKey: '', showPw: false });
     applyPreset(S.preset); render();
+  },
+  'reveal-extension': async () => {
+    try {
+      const res = await api('POST', '/api/extension/reveal', {});
+      if (!res.ok) window.alert('Could not open a file manager here. The folder is:\n' + res.folder);
+    } catch (err) { window.alert(err.message); }
   },
   'toggle-pw': () => { S.showPw = !S.showPw; render(); },
   copy: (arg, el) => {
@@ -728,3 +790,4 @@ async function boot() {
 }
 
 boot();
+setInterval(pollExtension, 2000);
