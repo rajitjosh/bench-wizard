@@ -19,7 +19,7 @@ Python 3.10+ standard library only. No build step, no dependencies.
 - [Browser extension: copy apps from a Frappe Cloud site](#browser-extension-copy-apps-from-a-frappe-cloud-site)
 - [Which GitHub account it uses](#which-github-account-it-uses)
 - [Catalog: your own apps and presets](#catalog-your-own-apps-and-presets)
-- [macOS](#macos) · [Troubleshooting](#troubleshooting) · [Tests](#tests) · [Notes](#notes) · [Future plans](#future-plans)
+- [macOS](#macos) · [Troubleshooting](#troubleshooting) · [Tests](#tests) · [Notes](#notes) · [Future plans](#future-plans) · [License](#license)
 
 ## What you can use it for
 
@@ -341,3 +341,7 @@ window shows the setup already running, and starting another is refused. To set 
    are checked against other active sessions.
 
 Concurrent `pip` and `yarn` runs share caches and can occasionally fail; retrying the step is the fallback.
+
+## License
+
+[MIT](LICENSE)
