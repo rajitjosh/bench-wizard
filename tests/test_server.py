@@ -9,6 +9,7 @@ from pathlib import Path
 from bench_wizard import catalog, server
 from bench_wizard.backup import BackupError, BackupInfo
 from bench_wizard.deps import AppInfo, InspectError, Resolution
+from bench_wizard.existing import BenchError, BenchInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 ROWS = [{"id": "python", "title": "Python", "note": "", "required": "3.11", "status": "ok", "found": "3.11.9"}]
@@ -265,6 +266,49 @@ class ServerTest(unittest.TestCase):
         status, data = self.request("POST", "/api/plan", self.answers(folder="~/x y/bench"))
         self.assertEqual(status, 400)
         self.assertIn("space", data["error"])
+
+    def test_plan_for_an_existing_bench(self):
+        bench = BenchInfo(str(self.tmp / "b"), "version-15", "", ["frappe", "erpnext", "crm"],
+                          {"s.localhost": {"apps": ["frappe", "erpnext"]}, "x.localhost": {"error": "no database"}})
+        self.app.inspect_bench_fn = lambda folder, cat, env: bench
+        status, res = self.request("POST", "/api/bench/inspect", {"folder": "~/b"})
+        self.assertEqual((status, res["version"], res["apps"]), (200, "version-15", ["frappe", "erpnext", "crm"]))
+        apps = [{"name": "erpnext", "repo": "", "branch": ""}, {"name": "crm", "repo": "", "branch": ""},
+                {"name": "hrms", "repo": "https://github.com/frappe/hrms.git", "branch": "version-15"}]
+        body = {"existing": True, "folder": "~/b", "site": "s.localhost", "apps": apps}
+        status, plan = self.request("POST", "/api/plan", body)
+        self.assertEqual(status, 200)
+        # erpnext is installed already; crm is in the bench; hrms must be fetched; no .nvmrc yet, so one is written
+        self.assertEqual([s["id"] for s in plan["steps"]], ["nvmrc", "get-hrms", "clear-cache", "install-crm", "install-hrms", "build"])
+        self.assertTrue(plan["existing"])
+        self.assertEqual(self.app.pending["services"][0]["before"], "install-crm")
+        status, res = self.request("POST", "/api/plan", dict(body, site="x.localhost"))
+        self.assertEqual(status, 400)
+        self.assertIn("no database", res["error"])
+
+    def test_new_site_from_a_backup_in_an_existing_bench(self):
+        bench = BenchInfo(str(self.tmp / "b"), "version-15", "18", ["frappe", "erpnext"],
+                          {"s.localhost": {"apps": ["frappe", "erpnext"]}})
+        self.app.inspect_bench_fn = lambda folder, cat, env: bench
+        body = {"existing": True, "folder": "~/b", "site": "copy.localhost", "admin_password": "adm",
+                "mariadb_root_password": "rootpw", "db_name": "",
+                "apps": [{"name": "erpnext", "repo": "", "branch": ""}],
+                "restore": {"sql": "/b/db.sql.gz", "mute_emails": True, "pause_scheduler": True, "sanitize": True}}
+        status, plan = self.request("POST", "/api/plan", body)
+        self.assertEqual(status, 200)
+        self.assertEqual([s["id"] for s in plan["steps"]], [
+            "new-site", "restore", "mute-emails", "pause-scheduler", "sanitize", "migrate", "admin-password", "build"])
+        self.assertEqual(plan["restore"], {"mute_emails": True, "pause_scheduler": True, "sanitize": True})
+        self.assertEqual(self.app.pending["services"][0]["before"], "new-site")
+        status, res = self.request("POST", "/api/plan", dict(body, site="s.localhost"))
+        self.assertEqual(status, 400)
+        self.assertIn("already", res["error"])
+
+    def test_inspect_bench_error_is_reported(self):
+        def fail(folder, cat, env):
+            raise BenchError("not a bench")
+        self.app.inspect_bench_fn = fail
+        self.assertEqual(self.request("POST", "/api/bench/inspect", {"folder": "/x"}), (400, {"error": "not a bench"}))
 
     def test_plan_with_missing_answer_is_rejected(self):
         status, data = self.request("POST", "/api/plan", self.answers(site=""))

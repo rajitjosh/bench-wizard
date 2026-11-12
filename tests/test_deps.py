@@ -119,6 +119,24 @@ class InspectTest(unittest.TestCase):
         self.assertEqual(info.requires_python, ">=3.10")
         self.assertEqual(info.requires, {"frappe": ">=15.0.0,<16.0.0", "erpnext": ">=15.0.0,<16.0.0"})
 
+    def test_node_floor_from_nested_package_json(self):
+        repo = make_repo(self.tmp.name, "fac", {
+            "pyproject.toml": '[project]\nname = "fac"\n',
+            "fac/hooks.py": 'app_name = "fac"\n',
+            "package.json": '{"engines": {"node": ">=18"}}',
+            "fac/chat/frontend/package.json": '{"engines": {"node": ">=22.12.0"}}',
+            "fac/x/node_modules/dep/package.json": '{"engines": {"node": ">=30"}}',
+        })
+        self.assertEqual(deps.inspect(repo, "version-15").requires_node, 22)
+
+    def test_node_floor(self):
+        self.assertEqual(deps.node_floor(">=22.12.0"), 22)
+        self.assertEqual(deps.node_floor("^18 || ^20"), 18)
+        self.assertEqual(deps.node_floor(">=18 <23"), 18)
+        self.assertEqual(deps.node_floor(""), 0)
+        self.assertEqual(deps.read_node_floor("not json"), 0)
+        self.assertEqual(deps.read_node_floor('{"engines": "x"}'), 0)
+
     def test_hooks_adds_apps_missing_from_pyproject(self):
         repo = make_repo(self.tmp.name, "ic", {
             "pyproject.toml": '[project]\nname = "india_compliance"\n'
@@ -183,8 +201,8 @@ CATALOG = {
 }
 
 
-def info(name, requires=None, python=""):
-    return deps.AppInfo(name, name.title(), "", python, requires or {})
+def info(name, requires=None, python="", node=0):
+    return deps.AppInfo(name, name.title(), "", python, requires or {}, node)
 
 
 def fake_inspect(table):
@@ -206,6 +224,11 @@ def sel(name, version="version-15", **over):
 class ResolveTest(unittest.TestCase):
     def resolve(self, selected, table, version="version-15"):
         return deps.resolve(selected, CATALOG, version, inspect_fn=fake_inspect(table))
+
+    def test_requirement_already_in_the_bench_is_not_fetched(self):
+        res = deps.resolve({"lending": sel("lending")}, CATALOG, "version-15", present={"erpnext"},
+                           inspect_fn=fake_inspect({"r/lending": info("lending", {"erpnext": ""})}))
+        self.assertEqual((res.errors, res.order), ([], ["lending"]))
 
     def test_orders_by_declared_dependencies(self):
         res = self.resolve(
@@ -317,6 +340,16 @@ class ResolveTest(unittest.TestCase):
         b = {"repo": "r/b", "branch": "main", "title": "B", "added_for": None}
         res = self.resolve({"a": a, "b": b}, {"r/a": info("a", {"b": ""}), "r/b": info("b", {"a": ""})})
         self.assertTrue(any("cycle" in e for e in res.errors))
+
+    def test_node_is_raised_to_what_an_app_needs(self):
+        res = self.resolve({"lending": sel("lending"), "erpnext": sel("erpnext")},
+                           {"r/lending": info("lending", node=22), "r/erpnext": info("erpnext", node=20)})
+        self.assertEqual(res.node, "22")
+        self.assertTrue(any("Node 22 instead of 18" in n for n in res.notices))
+
+    def test_node_stays_when_apps_need_no_newer_one(self):
+        res = self.resolve({"erpnext": sel("erpnext")}, {"r/erpnext": info("erpnext", node=16)})
+        self.assertEqual((res.node, res.notices), ("18", []))
 
     def test_inspect_failure_is_reported_and_catalog_order_kept(self):
         res = self.resolve(

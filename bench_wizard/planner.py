@@ -6,6 +6,17 @@ from dataclasses import dataclass
 
 MASK = "••••"
 
+# What a restored production copy must not repeat: queued mail, mailbox pulls, webhooks, SMS and Slack alerts.
+# The tables, fields and Email Queue statuses are the same in Frappe v15 and v16.
+SANITIZE_SQL = (
+    "SET SQL_SAFE_UPDATES=0; "  # `bench mariadb` starts the client with --safe-updates, which refuses these
+    "UPDATE `tabEmail Queue` SET status='Error', error='Held back by Bench Wizard: site restored from a backup' "
+    "WHERE status IN ('Not Sent','Partially Sent','Sending'); "
+    "UPDATE `tabEmail Account` SET enable_incoming=0; "
+    "UPDATE `tabWebhook` SET enabled=0; "
+    "UPDATE `tabNotification` SET enabled=0 WHERE channel IN ('Slack','SMS');"
+)
+
 
 class PlanError(ValueError):
     pass
@@ -35,7 +46,47 @@ def _secret_after(argv, *flags):
     return tuple(i + 1 for i, arg in enumerate(argv) if arg in flags)
 
 
+def _get_app(app, folder):
+    tail = ["--branch", app["branch"], app["repo"]]
+    return Step(f"get-{app['name']}", f"get-app {app['name']}", ["bench", "get-app", "--skip-assets"] + tail,
+                folder, retry_argv=["bench", "get-app", "--overwrite", "--skip-assets"] + tail)
+
+
+def _nvmrc(node, folder):
+    return Step("nvmrc", f"write .nvmrc (Node {node})", ["sh", "-c", 'printf "%s\\n" "$1" > .nvmrc', "sh", node],
+                folder)
+
+
+def plan_existing(answers):
+    """Add apps to a site of a bench that already exists, then rebuild the assets.
+
+    Apps marked `on_bench` are in the bench already and are only installed on the site.
+    Nothing here removes anything, so no step has a cleanup.
+    """
+    folder, site = answers["folder"], answers["site"]
+    # The site is a folder the bench already has (the server checks); it only must not read as an option.
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", site):
+        raise PlanError(f"cannot use the site name {site!r}")
+    on_site = ["bench", "--site", site]
+    steps = [_nvmrc(answers["node"], folder)] if answers.get("write_nvmrc") else []
+    steps += [_get_app(app, folder) for app in answers["apps"] if not app.get("on_bench")]
+    if len(steps) > bool(answers.get("write_nvmrc")):
+        # A running bench's Redis still holds the app -> modules map from before get-app; without
+        # this, install-app syncs none of the new app's doctypes and its after_install fails.
+        steps.append(Step("clear-cache", "clear-cache", on_site + ["clear-cache"], folder))
+    steps += [Step(f"install-{app['name']}", f"install-app {app['name']}", on_site + ["install-app", app["name"]],
+                   folder) for app in answers["apps"]]
+    steps.append(Step("build", "bench build", ["bench", "build"], folder))
+    return steps
+
+
 def plan(answers, catalog):
+    """Set up a new bench and site, or with `existing` only a new site in that bench.
+
+    In an existing bench, apps marked `on_bench` are not fetched, and its default site and
+    developer mode are left alone.
+    """
+    existing = answers.get("existing")
     version = answers.get("version")
     profile = catalog["frappe_versions"].get(version)
     if profile is None:
@@ -74,16 +125,13 @@ def plan(answers, catalog):
     def install(app):
         add(f"install-{app['name']}", f"install-app {app['name']}", on_site + ["install-app", app["name"]])
 
-    add("init", "bench init",
-        ["bench", "init", folder, "--frappe-branch", version, "--python", f"python{profile['python']}"],
-        cwd="/", cleanup=["rm", "-rf", folder], cleanup_required=True)
-    add("nvmrc", f"write .nvmrc (Node {profile['node']})",
-        ["sh", "-c", 'printf "%s\\n" "$1" > .nvmrc', "sh", profile["node"]])
-
-    for app in apps:
-        tail = ["--branch", app["branch"], app["repo"]]
-        add(f"get-{app['name']}", f"get-app {app['name']}", ["bench", "get-app", "--skip-assets"] + tail,
-            retry_argv=["bench", "get-app", "--overwrite", "--skip-assets"] + tail)
+    if not existing:
+        add("init", "bench init",
+            ["bench", "init", folder, "--frappe-branch", version, "--python", f"python{profile['python']}"],
+            cwd="/", cleanup=["rm", "-rf", folder], cleanup_required=True)
+    if not existing or answers.get("write_nvmrc"):
+        steps.append(_nvmrc(answers.get("node") or profile["node"], folder))
+    steps += [_get_app(app, folder) for app in apps if not app.get("on_bench")]
 
     new_site = ["bench", "new-site", site]
     if answers.get("db_name"):
@@ -109,6 +157,13 @@ def plan(answers, catalog):
         if restore.get("site_key"):
             argv = on_site + ["set-config", "encryption_key", restore["site_key"]]
             add("site-key", "set encryption key", argv, (len(argv) - 1,))
+        # Before migrate: nothing from the source may send or sync once the site can run code.
+        if restore.get("mute_emails"):
+            add("mute-emails", "mute outgoing email", on_site + ["set-config", "mute_emails", "1"])
+        if restore.get("pause_scheduler"):
+            add("pause-scheduler", "pause scheduler", on_site + ["set-config", "pause_scheduler", "1"])
+        if restore.get("sanitize"):
+            add("sanitize", "hold back queued email, webhooks and alerts", on_site + ["mariadb", "-e", SANITIZE_SQL])
         in_backup = set(restore.get("backup_apps") or [])
         # migrate imports every installed app, so one the bench lacks must be forgotten first
         for name in restore.get("backup_apps") or []:
@@ -121,28 +176,25 @@ def plan(answers, catalog):
                 install(app)
         argv = on_site + ["set-admin-password", admin_pw]
         add("admin-password", "set Administrator password", argv, (len(argv) - 1,))
-        if restore.get("mute_emails"):
-            add("mute-emails", "mute outgoing email", on_site + ["set-config", "mute_emails", "1"])
-        if restore.get("pause_scheduler"):
-            add("pause-scheduler", "pause scheduler", on_site + ["set-config", "pause_scheduler", "1"])
     else:
         for app in apps:
             install(app)
 
-    add("use", "bench use", ["bench", "use", site])
-    add("developer-mode", "set-config developer_mode", on_site + ["set-config", "developer_mode", "1"])
+    if not existing:
+        add("use", "bench use", ["bench", "use", site])
+        add("developer-mode", "set-config developer_mode", on_site + ["set-config", "developer_mode", "1"])
     add("build", "bench build", ["bench", "build"])
     if not restore:
         add("migrate", "migrate", on_site + ["migrate"])
     return steps
 
 
-def services(answers):
+def services(answers, before="new-site"):
     """Background processes the site steps need: the bench's own Redis.
 
     install-app and migrate queue jobs, which fails unless the bench's Redis is up. Outside
     the wizard `bench start` runs it; here it lives only while the site steps run.
     """
     folder = answers["folder"]
-    return [{"argv": ["redis-server", f"config/redis_{name}.conf"], "cwd": folder, "before": "new-site"}
+    return [{"argv": ["redis-server", f"config/redis_{name}.conf"], "cwd": folder, "before": before}
             for name in ("queue", "cache")]

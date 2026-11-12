@@ -19,7 +19,7 @@ def answers(**over):
 
 def restore(**over):
     base = {"sql": "/b/db.sql.gz", "public": "", "private": "", "backup_key": "", "site_key": "",
-            "mute_emails": True, "pause_scheduler": True, "backup_apps": ["frappe", "erpnext"]}
+            "mute_emails": True, "pause_scheduler": True, "sanitize": True, "backup_apps": ["frappe", "erpnext"]}
     base.update(over)
     return base
 
@@ -51,6 +51,9 @@ class PlanTest(unittest.TestCase):
         steps = planner.plan(answers(version="version-16"), CATALOG)
         self.assertEqual(steps[0].argv[-3:], ["version-16", "--python", "python3.14"])
         self.assertEqual(steps[1].argv[-1], "24")
+
+    def test_node_from_answers_overrides_the_version(self):
+        self.assertEqual(planner.plan(answers(node="22"), CATALOG)[1].argv[-1], "22")
 
     def test_working_directories(self):
         steps = planner.plan(answers(), CATALOG)
@@ -158,10 +161,11 @@ class RestorePlanTest(unittest.TestCase):
         self.assertEqual(argvs(steps)[3:], [
             ["bench", "new-site", s, "--mariadb-root-password", "rootpw", "--admin-password", "adminpw"],
             ["bench", "--site", s, "restore", "/b/db.sql.gz", "--db-root-password", "rootpw"],
-            ["bench", "--site", s, "migrate"],
-            ["bench", "--site", s, "set-admin-password", "adminpw"],
             ["bench", "--site", s, "set-config", "mute_emails", "1"],
             ["bench", "--site", s, "set-config", "pause_scheduler", "1"],
+            ["bench", "--site", s, "mariadb", "-e", planner.SANITIZE_SQL],
+            ["bench", "--site", s, "migrate"],
+            ["bench", "--site", s, "set-admin-password", "adminpw"],
             ["bench", "use", s],
             ["bench", "--site", s, "set-config", "developer_mode", "1"],
             ["bench", "build"],
@@ -185,9 +189,25 @@ class RestorePlanTest(unittest.TestCase):
 
     def test_toggles_off(self):
         ids = [st.id for st in planner.plan(
-            answers(restore=restore(mute_emails=False, pause_scheduler=False)), CATALOG)]
+            answers(restore=restore(mute_emails=False, pause_scheduler=False, sanitize=False)), CATALOG)]
         self.assertNotIn("mute-emails", ids)
         self.assertNotIn("pause-scheduler", ids)
+        self.assertNotIn("sanitize", ids)
+
+    def test_sanitize_holds_back_every_side_effect(self):
+        sql = planner.SANITIZE_SQL
+        for table in ("`tabEmail Queue`", "`tabEmail Account`", "`tabWebhook`", "`tabNotification`"):
+            self.assertIn(f"UPDATE {table}", sql)
+        self.assertIn("'Not Sent','Partially Sent','Sending'", sql)
+
+    def test_new_site_from_backup_in_an_existing_bench(self):
+        crm = {"name": "crm", "on_bench": True}
+        steps = planner.plan(answers(existing=True, write_nvmrc=False, apps=[crm, LENDING],
+                                     restore=restore(backup_apps=["frappe", "crm", "hrms"])), CATALOG)
+        ids = [st.id for st in steps]
+        # no bench init, no fetch of crm, no `bench use` or developer mode on someone's bench
+        self.assertEqual(ids, ["get-lending", "new-site", "restore", "mute-emails", "pause-scheduler", "sanitize",
+                               "forget-hrms", "migrate", "install-lending", "admin-password", "build"])
 
     def test_apps_not_in_backup_installed_after_migrate(self):
         steps = planner.plan(answers(apps=[ERPNEXT, LENDING], restore=restore()), CATALOG)
@@ -224,3 +244,35 @@ class RestorePlanTest(unittest.TestCase):
     def test_restore_needs_sql_path(self):
         with self.assertRaises(planner.PlanError):
             planner.plan(answers(restore=restore(sql="")), CATALOG)
+
+
+class PlanExistingTest(unittest.TestCase):
+    def plan(self, **over):
+        base = {"folder": F, "site": "demo.localhost", "node": "18", "write_nvmrc": False,
+                "apps": [{"name": "crm", "on_bench": True}, ERPNEXT]}
+        return planner.plan_existing(dict(base, **over))
+
+    def test_fetches_only_new_apps_installs_all_then_builds(self):
+        steps = self.plan()
+        s = ["bench", "--site", "demo.localhost"]
+        self.assertEqual(argvs(steps), [
+            ["bench", "get-app", "--skip-assets", "--branch", "version-15", ERPNEXT["repo"]],
+            s + ["clear-cache"], s + ["install-app", "crm"], s + ["install-app", "erpnext"], ["bench", "build"]])
+        # nothing in an existing bench may be cleaned up (removed) on retry
+        self.assertTrue(all(st.cwd == F and not st.cleanup for st in steps))
+
+    def test_no_cache_clear_when_nothing_is_fetched(self):
+        steps = self.plan(write_nvmrc=True, apps=[{"name": "crm", "on_bench": True}])
+        self.assertEqual([st.id for st in steps], ["nvmrc", "install-crm", "build"])
+
+    def test_nvmrc_is_written_only_when_asked(self):
+        self.assertEqual(self.plan(write_nvmrc=True, node="20")[0].argv[-1], "20")
+
+    def test_with_no_apps_only_builds(self):
+        self.assertEqual(argvs(self.plan(apps=[])), [["bench", "build"]])
+
+    def test_site_name_is_validated(self):
+        self.assertEqual(self.plan(site="fine_and_raw.local")[-2].argv[2], "fine_and_raw.local")
+        for bad in ("x;y", "-x", "a b"):
+            with self.assertRaises(planner.PlanError):
+                self.plan(site=bad)

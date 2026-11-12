@@ -22,6 +22,7 @@ class FakeProbe(preflight.Probe):
         self.root_ok = over.get("root_ok", True)
         self.remote = over.get("remote", {})
         self.tools = over.get("tools", True)
+        self.node = over.get("node", True)
 
     def free_bytes(self, path):
         return self.free
@@ -37,6 +38,9 @@ class FakeProbe(preflight.Probe):
 
     def tool_version(self, argv, env):
         return "1.2.3" if self.tools else ""
+
+    def node_installed(self, node):
+        return self.node
 
 
 class LsRemoteTest(unittest.TestCase):
@@ -85,6 +89,29 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(self.failed(rows), [])
         self.assertGreaterEqual(len(rows), 5)
 
+    def test_existing_bench_skips_the_new_bench_checks(self):
+        (self.dir / "bench" / "apps").mkdir(parents=True)
+        rows = self.run_checks(self.answers(existing=True), root_ok=False)
+        self.assertEqual(self.failed(rows), [])
+        labels = [r["label"] for r in rows]
+        self.assertIn(f"Bench folder {self.dir / 'bench'} has site s.localhost", labels)
+        self.assertFalse(any("for Frappe" in l or "MariaDB" in l for l in labels))
+
+    def test_new_site_from_backup_in_existing_bench(self):
+        (self.dir / "bench" / "apps").mkdir(parents=True)
+        backup = BackupInfo(apps={"frappe": "15.1.0", "crm": "1.0.0"}, frappe_major=15)
+        answers = self.answers(existing=True, apps=[{"name": "crm", "on_bench": True}],
+                               restore={"sql": str(self.dir / "missing.sql")})
+        failed = self.failed(self.run_checks(answers, backup=backup, root_ok=False))
+        # a new site needs the root password; crm is on the bench, so it is not reported as dropped
+        self.assertIn("MariaDB root password was not accepted", failed)
+        labels = [r["label"] for r in self.run_checks(answers, backup=backup)]
+        self.assertFalse(any("contains crm" in l for l in labels))
+
+    def test_existing_bench_that_is_not_writable_fails(self):
+        rows = self.run_checks(self.answers(existing=True))  # no apps/ folder at all
+        self.assertTrue(any("Cannot write to" in l for l in self.failed(rows)))
+
     def test_existing_folder_fails(self):
         (self.dir / "bench").mkdir()
         self.assertTrue(any("already exists" in l for l in self.failed(self.run_checks())))
@@ -124,6 +151,10 @@ class PreflightTest(unittest.TestCase):
     def test_resolution_errors_become_failing_rows(self):
         rows = self.run_checks(resolution=self.resolution(errors=["Lending needs ERPNext"]))
         self.assertIn("Lending needs ERPNext", self.failed(rows))
+
+    def test_missing_node_names_the_resolved_version(self):
+        rows = self.run_checks(resolution=self.resolution(node="22"), node=False)
+        self.assertEqual(self.failed(rows), ["Node 22 is not installed with nvm. Fix: nvm install 22"])
 
     def test_missing_tools_fail(self):
         self.assertEqual(len(self.failed(self.run_checks(tools=False))), 2)
