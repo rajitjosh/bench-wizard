@@ -1,5 +1,6 @@
 """Read what a Frappe app requires from its repository, and resolve a selection."""
 import ast
+import json
 import os
 import re
 import subprocess
@@ -18,6 +19,7 @@ class AppInfo:
     app_description: str
     requires_python: str
     requires: dict  # required app -> version range, "" when unknown
+    requires_node: int = 0  # lowest Node major its package.json files accept, 0 when unstated
 
 
 @dataclass
@@ -26,6 +28,7 @@ class Resolution:
     apps: dict = field(default_factory=dict)
     notices: list = field(default_factory=list)
     errors: list = field(default_factory=list)
+    node: str = ""  # Node major for the bench: the version's, raised to what the apps need
 
 
 class InspectError(RuntimeError):
@@ -136,6 +139,21 @@ def supported_majors(range_):
     return [major for major in range(10, 31) if admits_major(range_, major)]
 
 
+def node_floor(range_):
+    """The lowest Node major an engines.node range accepts, e.g. ">=22.12.0" -> 22; 0 when unknown."""
+    # shortcut: takes each "||" alternative's first number as its floor; misreads "<20" alone as 20.
+    floors = [int(m.group()) for alt in str(range_ or "").split("||") if (m := re.search(r"\d+", alt))]
+    return min(floors, default=0)
+
+
+def read_node_floor(text):
+    try:
+        engines = json.loads(text).get("engines") or {}
+    except (ValueError, AttributeError):
+        return 0
+    return node_floor(engines.get("node")) if isinstance(engines, dict) else 0
+
+
 def _git(args, cwd=None, timeout=120, env=None):
     env = dict(os.environ, **(env or {}), GIT_TERMINAL_PROMPT="0")
     try:
@@ -181,6 +199,9 @@ def inspect(repo, branch, env=None):
         if not folder and len(hooks_dirs) == 1:
             folder = hooks_dirs[0]
         hooks = read_hooks(_show(clone, f"{folder}/hooks.py", env) or "") if folder else read_hooks("")
+        # Nested frontends (e.g. chat/frontend) can need a newer Node than the root package.json says.
+        packages = [f for f in files if f.rsplit("/", 1)[-1] == "package.json" and "node_modules/" not in f]
+        node = max((read_node_floor(_show(clone, f, env) or "") for f in packages), default=0)
 
     name = hooks["app_name"] or folder or project["name"].replace("-", "_")
     requires = dict(project["deps"])
@@ -188,7 +209,7 @@ def inspect(repo, branch, env=None):
         requires.setdefault(required, "")
     requires.pop(name, None)
     return AppInfo(name, hooks["app_title"] or name, hooks["app_description"],
-                   project["requires_python"], requires)
+                   project["requires_python"], requires, node)
 
 
 def _branch_major(branch):
@@ -201,10 +222,11 @@ def _names(names):
     return ", ".join(sorted(names)) or "nothing"
 
 
-def resolve(selected, catalog, version, inspect_fn=inspect):
+def resolve(selected, catalog, version, inspect_fn=inspect, present=()):
     """Follow each selected app's declared requirements and work out the install order.
 
     `selected` maps app name to {"repo", "branch", "title", "added_for"}; frappe is implied.
+    `present` names apps the bench already has, which satisfy a requirement without being fetched.
     """
     res = Resolution(apps={name: dict(app) for name, app in selected.items() if name != "frappe"})
     profile = catalog["frappe_versions"][version]
@@ -249,7 +271,7 @@ def resolve(selected, catalog, version, inspect_fn=inspect):
                                   f"but {profile['title']} uses Python {profile['python']}")
 
             for required in sorted(graph[name]):
-                if required in res.apps:
+                if required in res.apps or required in present:
                     continue
                 known = catalog["apps"].get(required)
                 if known is None:
@@ -274,6 +296,14 @@ def resolve(selected, catalog, version, inspect_fn=inspect):
                     f"{res.apps[name]['title']} branch {res.apps[name]['branch']} needs "
                     f"{res.apps[required]['title']} {range_}, but branch "
                     f"{res.apps[required]['branch']} is selected")
+
+    res.node = profile["node"]
+    needs = {res.apps[n]["title"]: i.requires_node for n, i in infos.items()
+             if i.requires_node > int(profile["node"])}
+    if needs:
+        res.node = str(max(needs.values()))
+        why = ", ".join(f"{title} needs Node {major} or newer" for title, major in sorted(needs.items()))
+        res.notices.append(f"{why}. The bench uses Node {res.node} instead of {profile['node']}.")
 
     names = list(res.apps)  # the order the apps were given in decides ties
     try:

@@ -16,7 +16,7 @@ from . import catalog as catalog_mod
 from . import checks as checks_mod
 from concurrent.futures import ThreadPoolExecutor
 
-from . import deps, desktop, gitauth, planner, preflight as preflight_mod
+from . import deps, desktop, existing as existing_mod, gitauth, planner, preflight as preflight_mod
 from .runner import Runner
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -37,7 +37,7 @@ class ApiError(Exception):
 class App:
     def __init__(self, catalog, state_root, token=None, checks=checks_mod, resolve=deps.resolve,
                  preflight=preflight_mod.run, inspect_app=deps.inspect, inspect_backup=backup_mod.inspect,
-                 reveal=desktop.reveal, github_ssh_host=None):
+                 reveal=desktop.reveal, github_ssh_host=None, inspect_bench=existing_mod.inspect):
         self.catalog = catalog
         self.state_root = state_root
         self.token = token or secrets.token_urlsafe(24)
@@ -46,6 +46,7 @@ class App:
         self.preflight = preflight
         self.inspect_app = inspect_app
         self.inspect_backup = inspect_backup
+        self.inspect_bench_fn = inspect_bench
         self.reveal = reveal
         self.extension = None  # {"version"} once the Frappe Cloud extension has checked in
         self.inbox = None  # the last app list the extension sent, until the page picks it up
@@ -138,6 +139,17 @@ class App:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "apps": info.apps, "frappe_major": info.frappe_major}
 
+    def _read_bench(self, folder):
+        try:
+            return self.inspect_bench_fn(folder, self.catalog, self.checks.build_env(""))
+        except existing_mod.BenchError as exc:
+            raise ApiError(400, str(exc))
+
+    def post_inspect_bench(self, query, body):
+        info = self._read_bench(body.get("folder", ""))
+        return {"folder": info.folder, "version": info.version, "node": info.node, "apps": info.apps,
+                "sites": info.sites}
+
     # -- Frappe Cloud extension ----------------------------------------
     # hello and send come from the extension, not the page: they need no token but must carry an extension
     # Origin, which web pages cannot set. send only fills the page's import box; nothing is cloned until
@@ -172,6 +184,8 @@ class App:
 
     # -- plan and run --------------------------------------------------
     def post_plan(self, query, body):
+        if body.get("existing"):
+            return self._plan_existing(body)
         version = body.get("version", "")
         profile = self._profile(version)
         folder = body.get("folder", "")
@@ -183,51 +197,113 @@ class App:
         git_env = self._git_env()
         resolution = self.resolve(selected, self.catalog, version,
                                   inspect_fn=lambda repo, branch: self.inspect_app(repo, branch, env=git_env))
-
-        restore, backup_info = body.get("restore"), None
-        if restore:
-            restore = dict(restore)
-            for key in ("sql", "public", "private"):
-                if restore.get(key):
-                    restore[key] = os.path.abspath(os.path.expanduser(restore[key]))
-            try:
-                backup_info = self.inspect_backup(restore.get("sql", ""))
-            except backup_mod.BackupError:
-                backup_info = None
-            restore["backup_apps"] = list(backup_info.apps) if backup_info else []
-            restore["partial"] = bool(backup_info and backup_info.partial)
-
-        answers = {
-            "version": version, "folder": folder, "site": body.get("site", "").strip(),
-            "db_name": body.get("db_name", "").strip(), "admin_password": body.get("admin_password", ""),
-            "mariadb_root_password": body.get("mariadb_root_password", ""),
-            "apps": [dict(resolution.apps[name], name=name) for name in resolution.order],
-            "restore": restore,
-        }
-        try:
-            steps = planner.plan(answers, self.catalog)
-        except planner.PlanError as exc:
-            raise ApiError(400, str(exc))
-        env = dict(self.checks.build_env(profile["node"]), **git_env)
+        restore, backup_info = self._restore(body.get("restore"))
+        answers = dict(self._new_site(body, restore), version=version, folder=folder,
+                       apps=[dict(resolution.apps[name], name=name) for name in resolution.order],
+                       node=resolution.node or profile["node"])
+        steps = self._steps(planner.plan, answers, self.catalog)
+        env = dict(self.checks.build_env(answers["node"]), **git_env)
         rows = self.preflight(answers, resolution, backup_info, self.catalog, env,
                               probe=preflight_mod.Probe(git_env))
+        return self._hold(steps, env, rows, self._summary(answers, profile, resolution),
+                          planner.services(answers), resolution.notices, backup_info)
+
+    def _restore(self, restore):
+        """The backup paths made absolute, plus what the backup itself says about its apps."""
+        if not restore:
+            return None, None
+        restore = dict(restore)
+        for key in ("sql", "public", "private"):
+            if restore.get(key):
+                restore[key] = os.path.abspath(os.path.expanduser(restore[key]))
+        try:
+            backup_info = self.inspect_backup(restore.get("sql", ""))
+        except backup_mod.BackupError:
+            backup_info = None
+        restore["backup_apps"] = list(backup_info.apps) if backup_info else []
+        restore["partial"] = bool(backup_info and backup_info.partial)
+        return restore, backup_info
+
+    @staticmethod
+    def _new_site(body, restore):
+        return {"site": body.get("site", "").strip(), "db_name": body.get("db_name", "").strip(),
+                "admin_password": body.get("admin_password", ""),
+                "mariadb_root_password": body.get("mariadb_root_password", ""), "restore": restore}
+
+    def _steps(self, plan_fn, *args):
+        try:
+            return plan_fn(*args)
+        except planner.PlanError as exc:
+            raise ApiError(400, str(exc))
+
+    @staticmethod
+    def _summary(answers, profile, resolution, local=()):
+        """What the Review and Done screens need; holds no passwords or keys."""
+        apps = [{"name": n, "title": n, "branch": "already in the bench", "repo": "", "added_for": None}
+                for n in local]
+        apps += [{"name": n, "title": resolution.apps[n]["title"], "branch": resolution.apps[n]["branch"],
+                  "repo": resolution.apps[n]["repo"], "added_for": resolution.apps[n].get("added_for")}
+                 for n in resolution.order]
+        restore = answers.get("restore")
+        return {"folder": answers["folder"], "site": answers["site"], "version": answers["version"],
+                "version_title": profile["title"], "python": profile["python"], "node": answers["node"],
+                "apps": apps, "existing": bool(answers.get("existing")),
+                "restore": {k: bool(restore.get(k)) for k in ("mute_emails", "pause_scheduler", "sanitize")}
+                if restore else None}
+
+    def _hold(self, steps, env, rows, summary, services, notices, backup_info=None):
+        """Keep the plan for /api/run and describe it to the page."""
         ok = all(row["ok"] for row in rows)
-        apps = [{"name": n, "title": resolution.apps[n]["title"], "branch": resolution.apps[n]["branch"],
-                 "repo": resolution.apps[n]["repo"], "added_for": resolution.apps[n].get("added_for")}
-                for n in resolution.order]
-        # What the Done screen needs; holds no passwords or keys.
-        summary = {
-            "folder": folder, "site": answers["site"], "version": version, "version_title": profile["title"],
-            "python": profile["python"], "node": profile["node"], "apps": apps,
-            "restore": {"mute_emails": bool(restore.get("mute_emails")),
-                        "pause_scheduler": bool(restore.get("pause_scheduler"))} if restore else None,
-        }
-        self.pending = {"steps": steps, "env": env, "ok": ok, "summary": summary,
-                        "services": planner.services(answers)}
-        return dict(summary, ok=ok, checks=rows, notices=resolution.notices,
-                    steps=[{"id": s.id, "title": s.title, "command": s.display()} for s in steps],
-                    backup={"apps": backup_info.apps, "frappe_major": backup_info.frappe_major}
-                    if backup_info else None)
+        self.pending = {"steps": steps, "env": env, "ok": ok, "summary": summary, "services": services}
+        backup = {"apps": backup_info.apps, "frappe_major": backup_info.frappe_major} if backup_info else None
+        return dict(summary, ok=ok, checks=rows, notices=notices, backup=backup,
+                    steps=[{"id": s.id, "title": s.title, "command": s.display()} for s in steps])
+
+    def _plan_existing(self, body):
+        """Add apps to a site of an existing bench, or with `restore` add a new site from a backup.
+
+        The bench is read again here, not trusted from the page.
+        """
+        bench = self._read_bench(body.get("folder", ""))
+        site = body.get("site", "").strip()
+        restore, backup_info = self._restore(body.get("restore"))
+        if restore:
+            if site and (site in bench.sites or os.path.lexists(os.path.join(bench.folder, "sites", site))):
+                raise ApiError(400, f"{site} already exists in this bench; pick a new site name")
+            installed = []
+        else:
+            installed = bench.sites.get(site, {}).get("apps")
+            if installed is None:
+                raise ApiError(400, f"cannot read the apps installed on {site}: "
+                                    f"{bench.sites.get(site, {}).get('error', 'no such site in this bench')}")
+        version, profile = bench.version, self._profile(bench.version)
+        wanted = [a for a in body.get("apps", []) if a.get("name") not in installed and a.get("name") != "frappe"]
+        local = [a["name"] for a in wanted if a["name"] in bench.apps]
+        selected = {a["name"]: {"repo": self._clean(a["repo"]), "branch": a["branch"],
+                                "title": a.get("title") or a["name"], "added_for": None}
+                    for a in wanted if a["name"] not in bench.apps}
+        git_env = self._git_env()
+        resolution = self.resolve(selected, self.catalog, version, present=set(bench.apps),
+                                  inspect_fn=lambda repo, branch: self.inspect_app(repo, branch, env=git_env))
+        node = bench.node or existing_mod.nvm_default_node() or profile["node"]
+        if int(resolution.node or 0) > int(node):
+            node = resolution.node
+        answers = {"existing": True, "version": version, "folder": bench.folder, "site": site, "node": node,
+                   "write_nvmrc": node != bench.node,  # also when there was none, so `nvm use` works after
+                   "apps": [{"name": n, "on_bench": True} for n in local]
+                           + [dict(resolution.apps[n], name=n) for n in resolution.order]}
+        if restore:
+            answers.update(self._new_site(body, restore), site=site)
+            steps = self._steps(planner.plan, answers, self.catalog)
+            services = planner.services(answers)
+        else:
+            steps = self._steps(planner.plan_existing, answers)
+            services = planner.services(answers, before=next((s.id for s in steps if s.id.startswith("install-")), ""))
+        env = dict(self.checks.build_env(node), **git_env)
+        rows = self.preflight(answers, resolution, backup_info, self.catalog, env,
+                              probe=preflight_mod.Probe(git_env))
+        return self._hold(steps, env, rows, self._summary(answers, profile, resolution, local),
+                          services, resolution.notices, backup_info)
 
     def _active(self):
         return self.runner is not None and self.runner.state == "running"
@@ -291,6 +367,7 @@ class App:
         ("POST", "/api/apps/inspect"): post_inspect_app,
         ("POST", "/api/apps/import"): post_import_apps,
         ("POST", "/api/backup/inspect"): post_inspect_backup,
+        ("POST", "/api/bench/inspect"): post_inspect_bench,
         ("POST", "/api/extension/hello"): post_extension_hello,
         ("POST", "/api/extension/send"): post_extension_send,
         ("GET", "/api/extension"): get_extension,

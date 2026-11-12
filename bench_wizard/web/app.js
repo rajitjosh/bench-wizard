@@ -7,7 +7,8 @@ const S = {
   step: 'project', reached: 0, catalog: null, errors: {},
   version: '', preset: '', folder: '', site: '', db: '', pw: '', folderEdited: false, siteEdited: false,
   siteData: 'new',
-  restore: { sql: '', public: '', private: '', backup_key: '', site_key: '', mute_emails: true, pause_scheduler: true },
+  mode: 'new', benchFolder: '', bench: null, benchSite: '', benchNew: false, benchBusy: false, benchMsg: '',
+  restore: { sql: '', public: '', private: '', backup_key: '', site_key: '', mute_emails: true, pause_scheduler: true, sanitize: true },
   backup: null, backupMsg: '', backupPath: '',
   checks: null, mac: false, checksVersion: '', checking: false, sudo: '', installing: '', installLogs: {}, installMsg: '',
   toolsInstalled: false, rootPw: '', rootOk: null, rootMsg: '', rootBusy: false,
@@ -63,24 +64,36 @@ function pickVersion(id) {
 }
 
 function syncApps() {
-  const backupApps = S.siteData === 'restore' && S.backup ? Object.keys(S.backup.apps) : [];
-  const key = [S.version, S.preset, backupApps.join(',')].join('|');
+  const backupApps = restoring() && S.backup ? Object.keys(S.backup.apps) : [];
+  const onBench = isExisting() ? S.bench.apps : [];
+  const onSite = isExisting() && !S.benchNew ? S.bench.sites[S.benchSite].apps : [];
+  const key = [S.mode, S.version, S.preset, backupApps.join(','), isExisting() ? S.bench.folder + '|' + (S.benchNew ? '+new' : S.benchSite) : ''].join('|');
   if (key === S.appsKey) return;
   S.appsKey = key;
   S.depWarn = null;
   const next = {};
-  const preset = S.catalog.presets[S.preset];
+  const presetApps = isExisting() ? [] : S.catalog.presets[S.preset].apps;
   for (const [name, app] of Object.entries(S.catalog.apps)) {
     const branch = app.branches[S.version] || '';
     const inBackup = backupApps.includes(name) && name !== 'frappe';
+    const installed = onSite.includes(name);
     next[name] = {
       title: app.title, description: app.description, repo: app.repo, requires: app.requires,
-      private: app.private, local: !!app.local, custom: false, branch, available: !!branch,
-      locked: name === 'frappe', inBackup, fromPreset: preset.apps.includes(name),
-      selected: !!branch && (name === 'frappe' || preset.apps.includes(name) || inBackup),
+      private: app.private, local: !!app.local, custom: false, branch, available: !!branch || onBench.includes(name),
+      locked: name === 'frappe' || installed, inBackup, fromPreset: presetApps.includes(name),
+      onBench: onBench.includes(name), installed,
+      selected: (!!branch || onBench.includes(name)) && (name === 'frappe' || installed || presetApps.includes(name) || inBackup),
     };
   }
-  for (const [name, app] of Object.entries(S.apps)) if (app.custom) next[name] = app;
+  // Apps the bench has that the catalog does not know: installable on the site, not fetched again.
+  for (const name of onBench) {
+    if (next[name]) continue;
+    const installed = onSite.includes(name);
+    const inBackup = backupApps.includes(name);
+    next[name] = { title: name, description: '', repo: '', requires: [], custom: false, branch: '', available: true,
+      locked: installed, selected: installed || inBackup, onBench: true, installed, inBackup };
+  }
+  for (const [name, app] of Object.entries(S.apps)) if (app.custom && !next[name]) next[name] = app;
   S.apps = next;
   for (const name of Object.keys(next)) if (next[name].selected) selectRequired(name);
 }
@@ -102,6 +115,10 @@ function dependants(name) {
   visit(name);
   return out;
 }
+
+const isExisting = () => S.mode === 'existing' && !!S.bench;
+// A site restored from a backup: the new bench's "Restore" choice, or a new site in a loaded bench.
+const restoring = () => (isExisting() ? S.benchNew : S.siteData === 'restore');
 
 const selectedApps = () => Object.entries(S.apps).filter(([, a]) => a.selected);
 
@@ -145,22 +162,46 @@ const radio = (act, arg, on, title, desc, extra = '', disabled = false) => `
     <span class="dot"><i></i></span><span><span class="t">${title}</span><span class="d">${esc(desc)}</span>${extra}</span>
   </button>`;
 
-function viewProject() {
-  const c = S.catalog;
-  const versions = Object.entries(c.frappe_versions).map(([id, v]) => radio('version', id, id === S.version,
-    esc(v.title) + (v.default ? ' <span class="badge blue">Default</span>' : ''),
-    `Python ${v.python} · Node ${v.node} · branch ${id}`)).join('');
-  const presets = Object.entries(c.presets).map(([id, p]) => {
-    const why = presetProblem(p, S.version);
-    return radio('preset', id, id === S.preset, esc(p.title) + (p.local ? ' <span class="badge">Local</span>' : ''),
-      p.description, why ? `<span class="why">${esc(why)}</span>` : '', !!why);
-  }).join('');
+const modeCard = () => `<section class="card"><h2>Bench</h2><div class="grid2" role="radiogroup" aria-label="Bench">
+  ${radio('mode', 'new', S.mode === 'new', 'Create a new bench', 'Set up Frappe, the apps and a site from scratch.')}
+  ${radio('mode', 'existing', S.mode === 'existing', 'Add apps to an existing bench', 'Load a bench on this machine, then install more apps on one of its sites, or add a new site from a backup.')}
+</div></section>`;
+
+function viewExisting() {
+  const b = S.bench;
+  const sites = !b ? '' : Object.entries(b.sites).map(([name, site]) => radio('bench-site', name, name === S.benchSite,
+    `<span class="mono">${esc(name)}</span>`, site.apps ? 'Installed: ' + site.apps.join(', ') : 'Cannot read its apps: ' + site.error,
+    '', !site.apps)).join('') + radio('bench-new', '', S.benchNew, 'New site from a backup',
+    'Restore a backup, for example from production, as a new site of this bench to look into an issue.');
+  const newSite = !b || !S.benchNew ? '' : `<section class="card"><h2>New site</h2><div class="grid2">
+      ${field('Site name', 'site', { mono: true, value: S.site, hint: 'Chrome and Firefox open a name ending in .localhost without a hosts entry; Safari needs one in /etc/hosts' })}
+      ${field('Database name <span class="hint">(optional)</span>', 'db', { mono: true, value: S.db, placeholder: 'Leave empty to let bench choose' })}
+      ${field('Administrator password', 'pw', { type: 'password', value: S.pw, hint: 'Set on the restored site, replacing the one from the backup' })}
+      ${field('MariaDB root password', 'rootPw', { type: 'password', value: S.rootPw, hint: 'Needed to create the new database' })}
+    </div>${restoreFields()}</section>`;
+  const view = `<div class="head"><h1>Project</h1><p class="lead">Load a bench that already exists, then pick a site to add apps to, or add a new site from a backup.</p></div>
+    ${modeCard()}
+    <section class="card"><h2>Existing bench</h2><div class="grid2 end">
+      ${field('Bench folder', 'benchFolder', { mono: true, value: S.benchFolder, placeholder: '~/frappe-bench', hint: 'The folder that holds apps/ and sites/' })}
+      <div><button class="btn primary" data-act="load-bench" ${S.benchBusy ? 'disabled' : ''}>${S.benchBusy ? '<span class="spin"></span> Reading bench…' : 'Load bench'}</button></div>
+    </div>
+    ${S.benchMsg ? `<div class="note bad">${INFO}<span>${esc(S.benchMsg)}</span></div>` : ''}
+    ${b ? `<p class="lead small">Frappe <strong>${esc(S.catalog.frappe_versions[b.version].title)}</strong> · Node ${esc(b.node || profile().node)} · apps in the bench: <span class="mono">${esc(b.apps.join(', '))}</span></p>` : ''}</section>
+    ${b ? `<section class="card"><h2>Site</h2><div class="grid2" role="radiogroup" aria-label="Site">${sites}</div>
+      ${S.errors.benchSite ? `<span class="err">${esc(S.errors.benchSite)}</span>` : ''}</section>` : ''}
+    ${newSite}`;
+  const footer = `<div class="live"></div>
+    <div class="right"><button class="btn primary" data-act="next" ${b && (S.benchSite || S.benchNew) ? '' : 'disabled'}>Continue to apps ${ARROW}</button></div>`;
+  return [view, footer];
+}
+
+function restoreFields() {
   const r = S.restore;
   const backupLine = S.backupMsg ? `<span class="err">${esc(S.backupMsg)}</span>`
     : S.backup && S.backupPath === r.sql ? `<span class="okmsg">${Object.keys(S.backup.apps).length
       ? 'Found in backup: ' + esc(Object.entries(S.backup.apps).map(([n, v]) => n + ' ' + v).join(', '))
       : 'Could not read the app list from this backup; app checks will be skipped'}</span>` : '';
-  const restore = S.siteData !== 'restore' ? '' : `
+  return `
     <div class="grid2">
       <div>${field('Database backup', 'restore.sql', { mono: true, value: r.sql, placeholder: '~/backups/site-database.sql.gz', hint: 'Path to a .sql or .sql.gz file on this machine' })}${backupLine}</div>
       ${field('Public files <span class="hint">(optional)</span>', 'restore.public', { mono: true, value: r.public, placeholder: '~/backups/site-files.tar' })}
@@ -170,9 +211,25 @@ function viewProject() {
     </div>
     <label class="tog"><input type="checkbox" data-check="restore.mute_emails" ${r.mute_emails ? 'checked' : ''}><span><strong>Mute outgoing email</strong><br><span class="hint">So the restored copy cannot email real customers</span></span></label>
     <label class="tog"><input type="checkbox" data-check="restore.pause_scheduler" ${r.pause_scheduler ? 'checked' : ''}><span><strong>Pause scheduler</strong><br><span class="hint">So background jobs and integrations from the source do not run</span></span></label>
+    <label class="tog"><input type="checkbox" data-check="restore.sanitize" ${r.sanitize ? 'checked' : ''}><span><strong>Hold back production side effects</strong><br><span class="hint">Marks queued email as not to be sent, and switches off incoming mail, webhooks and SMS or Slack alerts</span></span></label>
     <p class="lead small">Paths are typed or pasted: a browser cannot tell this tool where a chosen file lives.</p>`;
+}
+
+function viewProject() {
+  if (S.mode === 'existing') return viewExisting();
+  const c = S.catalog;
+  const versions = Object.entries(c.frappe_versions).map(([id, v]) => radio('version', id, id === S.version,
+    esc(v.title) + (v.default ? ' <span class="badge blue">Default</span>' : ''),
+    `Python ${v.python} · Node ${v.node} · branch ${id}`)).join('');
+  const presets = Object.entries(c.presets).map(([id, p]) => {
+    const why = presetProblem(p, S.version);
+    return radio('preset', id, id === S.preset, esc(p.title) + (p.local ? ' <span class="badge">Local</span>' : ''),
+      p.description, why ? `<span class="why">${esc(why)}</span>` : '', !!why);
+  }).join('');
+  const restore = S.siteData !== 'restore' ? '' : restoreFields();
   const view = `
     <div class="head"><h1>Project</h1><p class="lead">Pick the Frappe version and a preset. Folder and site name follow the preset until you edit them.</p></div>
+    ${modeCard()}
     <section class="card"><h2>Frappe version</h2><div class="grid2" role="radiogroup" aria-label="Frappe version">${versions}</div>
       <p class="lead small">Changing the version re-runs the system check and re-checks which presets and apps have a branch for it.</p></section>
     <section class="card"><h2>Preset</h2><div class="grid3" role="radiogroup" aria-label="Preset">${presets}</div></section>
@@ -254,6 +311,7 @@ function viewApps() {
       a.credentials ? '<span class="badge amber" title="Taken from the URL you gave. Kept in memory until the wizard closes; not written to disk.">Token held for this session</span>' : '',
       a.local ? '<span class="badge">Local</span>' : '',
       a.inBackup ? '<span class="badge green">in backup</span>' : '',
+      a.installed ? '<span class="badge green">installed on site</span>' : a.onBench ? '<span class="badge">in the bench</span>' : '',
       a.fromPreset && a.selected && !a.locked ? '<span class="badge">from preset</span>' : '',
       !a.available ? `<span class="badge amber">Not available for ${esc(profile().title)}</span>` : '',
     ].join(' ');
@@ -263,7 +321,7 @@ function viewApps() {
       <div class="body"><div class="t">${esc(a.title)} ${badges}</div><div class="d">${esc(a.description)}</div>
         <div class="repo mono">${esc(a.repo)}</div>
         <div class="br"><span style="color:var(--muted)">Branch</span>
-          <input class="sm" data-branch="${esc(name)}" value="${esc(a.branch)}" ${a.locked || !a.available ? 'disabled' : ''} aria-label="Branch for ${esc(a.title)}">
+          <input class="sm" data-branch="${esc(name)}" value="${esc(a.onBench ? 'already in the bench' : a.branch)}" ${a.locked || !a.available || a.onBench ? 'disabled' : ''} aria-label="Branch for ${esc(a.title)}">
           ${needs.length ? `<span class="badge">requires ${esc(needs.join(', '))}</span>` : ''}
           ${a.custom ? `<button class="btn sm" data-act="remove-custom" data-arg="${esc(name)}">Remove</button>` : ''}</div>
       </div></div>`;
@@ -282,7 +340,12 @@ function viewApps() {
   const warn = !S.depWarn ? '' : `<div class="note">${INFO}<span><strong>${esc(S.apps[S.depWarn.app].title)} is required by ${esc(S.depWarn.others.map((n) => S.apps[n].title).join(', '))}.</strong>
     Deselecting it deselects those too.<span class="acts"><button class="btn sm" data-act="dep-all">Deselect all</button><button class="btn sm" data-act="dep-keep">Keep</button></span></span></div>`;
   const names = selectedApps().map(([n]) => n);
-  const view = `<div class="head"><h1>Apps</h1><p class="lead">Preset <strong>${esc(S.catalog.presets[S.preset].title)}</strong> on Frappe <strong>${esc(profile().title)}</strong>.
+  const intro = isExisting() && S.benchNew ? `New site <strong class="mono">${esc(S.site)}</strong> from a backup in <span class="mono">${esc(tilde(S.bench.folder))}</span> on Frappe <strong>${esc(profile().title)}</strong>.
+    Apps in the backup are selected. Apps in the bench are installed without being fetched again; the rest are fetched first.`
+    : isExisting() ? `Site <strong class="mono">${esc(S.benchSite)}</strong> in <span class="mono">${esc(tilde(S.bench.folder))}</span> on Frappe <strong>${esc(profile().title)}</strong>.
+    Apps already installed on the site are locked. Apps in the bench are installed without being fetched again; the rest are fetched first.`
+    : `Preset <strong>${esc(S.catalog.presets[S.preset].title)}</strong> on Frappe <strong>${esc(profile().title)}</strong>.`;
+  const view = `<div class="head"><h1>Apps</h1><p class="lead">${intro}
     Selecting an app also selects what it requires. The install order is worked out from each app's own requirements on the next screen.</p>
     ${S.catalog.github_ssh_host ? `<p class="lead small">GitHub repositories are fetched with the SSH key of <span class="mono">${esc(S.catalog.github_ssh_host)}</span> from <span class="mono">~/.ssh/config</span>, set in <span class="mono">~/.config/bench-wizard/settings.json</span>.</p>` : ''}</div>
     ${warn}<div class="grid2">${cards}${add}</div>${extensionCard()}${importCard}`;
@@ -352,18 +415,19 @@ function viewReview() {
   if (!S.plan) return [`<div class="head"><h1>Review</h1></div><div class="note bad">${INFO}<span>${esc(S.planMsg || 'Could not build the plan.')}</span></div>`,
     back + '<div class="right"><button class="btn" data-act="replan">Try again</button></div>'];
   const p = S.plan;
-  const order = ['frappe (' + p.version + ')'].concat(p.apps.map((a) => `${a.name} (${a.branch})`)).join(' → ');
+  const order = (p.existing ? [] : ['frappe (' + p.version + ')']).concat(p.apps.map((a) => `${a.name} (${a.branch})`)).join(' → ');
   const added = p.apps.filter((a) => a.added_for).map((a) => `<span class="badge blue">${esc(a.title)} added because ${esc(a.added_for)} needs it</span>`).join(' ');
   const passed = p.checks.filter((c) => c.ok).length;
   const view = `<div class="head"><h1>Review</h1><p class="lead">This is exactly what will run. Go back to change anything; nothing is written until you start.</p></div>
     <section class="card"><div class="row"><h2>Summary</h2><a href="#" data-act="goto" data-arg="project" class="small">Edit project</a></div><div class="kv">
       <div><div class="k">Frappe version</div><div class="v">${esc(p.version_title)} · Python ${esc(p.python)} · Node ${esc(p.node)}</div></div>
-      <div><div class="k">Preset</div><div class="v">${esc(S.catalog.presets[S.preset].title)}</div></div>
+      ${p.existing ? `<div><div class="k">Bench</div><div class="v">${p.restore ? 'Existing; a new site is added from the backup' : 'Existing; apps are added, nothing is removed'}</div></div>`
+        : `<div><div class="k">Preset</div><div class="v">${esc(S.catalog.presets[S.preset].title)}</div></div>`}
       <div><div class="k">Bench folder</div><div class="v mono">${esc(tilde(p.folder))}</div></div>
       <div><div class="k">Site</div><div class="v mono">${esc(p.site)}</div></div>
-      <div><div class="k">Database</div><div class="v mono">${S.db ? esc(S.db) : '<span style="color:var(--muted)">chosen by bench</span>'}</div></div>
-      <div><div class="k">Site data</div><div class="v">${p.restore ? 'Restored from <span class="mono">' + esc(S.restore.sql) + '</span>' : 'New empty site'}</div></div>
-      <div class="full"><div class="k">Apps, in install order</div><div class="v mono">${esc(order)}</div>${added ? `<div class="v">${added}</div>` : ''}</div>
+      ${p.existing && !p.restore ? '' : `<div><div class="k">Database</div><div class="v mono">${S.db ? esc(S.db) : '<span style="color:var(--muted)">chosen by bench</span>'}</div></div>
+      <div><div class="k">Site data</div><div class="v">${p.restore ? 'Restored from <span class="mono">' + esc(S.restore.sql) + '</span>' : 'New empty site'}</div></div>`}
+      <div class="full"><div class="k">${p.existing && !p.restore ? 'Apps to add, in install order' : 'Apps, in install order'}</div><div class="v mono">${esc(order)}</div>${added ? `<div class="v">${added}</div>` : ''}</div>
     </div></section>
     ${p.notices.length ? `<div class="note info">${INFO}<span>${p.notices.map(esc).join('<br>')}</span></div>` : ''}
     <section class="card"><div class="row"><h2>Pre-flight checks</h2><span class="badge ${p.ok ? 'green' : 'red'}">${passed} of ${p.checks.length} passed</span></div>
@@ -399,10 +463,14 @@ function viewRun() {
       ${failedStep.cleanup && !failedStep.cleanup_required ? `<label class="tog"><input type="checkbox" data-check="cleanup" ${S.cleanup ? 'checked' : ''}>Run cleanup first</label>` : ''}
       <button class="btn primary" data-act="retry">Retry step ${n}</button><button class="btn danger" data-act="abandon">Stop here</button></div>`;
   } else if (r.state === 'cancelled') {
-    fail = `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> What was created so far is still on disk: the bench folder <span class="mono">${esc(tilde(r.summary.folder))}</span>${steps.some((s) => s.id === 'new-site' && s.state !== 'waiting') ? ' and possibly the site ' + esc(r.summary.site) : ''}. Remove them before setting up the same project again.</div>
+    fail = r.summary.existing && r.summary.restore ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> The site <span class="mono">${esc(r.summary.site)}</span> may be partly created. Remove it with <span class="mono">bench drop-site ${esc(r.summary.site)}</span> before trying again; the rest of the bench is untouched.</div>
+      <button class="btn" data-act="restart">Start again</button></div>`
+      : r.summary.existing ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> Apps fetched or installed so far stay in the bench; running the same plan again skips what is already installed on the site.</div>
+      <button class="btn" data-act="restart">Start again</button></div>`
+      : `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> What was created so far is still on disk: the bench folder <span class="mono">${esc(tilde(r.summary.folder))}</span>${steps.some((s) => s.id === 'new-site' && s.state !== 'waiting') ? ' and possibly the site ' + esc(r.summary.site) : ''}. Remove them before setting up the same project again.</div>
       <button class="btn" data-act="restart">Set up another bench</button></div>`;
   }
-  const view = `<div class="row" style="align-items:flex-end"><div class="head"><h1>Setting up ${esc(r.summary.site)}</h1>
+  const view = `<div class="row" style="align-items:flex-end"><div class="head"><h1>${r.summary.existing && !r.summary.restore ? 'Adding apps to' : 'Setting up'} ${esc(r.summary.site)}</h1>
       <p class="lead">Run <span class="mono">${esc(r.run_id)}</span> · ${doneCount} of ${steps.length} steps done · ${duration(elapsed)} elapsed</p></div>
       <span class="badge ${pill[0]}">● ${esc(pill[1])}</span></div>
     <div class="split"><div class="card flush list"><div class="loghead"><h2>Steps</h2></div>${list}</div>
@@ -429,25 +497,27 @@ function viewDone() {
   const s = r.summary;
   const folder = tilde(s.folder);
   const total = r.steps.reduce((sum, st) => sum + (st.duration || 0), 0);
-  const restore = !s.restore || !(s.restore.mute_emails || s.restore.pause_scheduler) ? '' : `<section class="card"><h2>Restored copy: safety switches</h2>
-    <div class="note">${INFO}<span>This site was restored from a backup. ${s.restore.mute_emails ? '<strong>Outgoing email is muted.</strong> ' : ''}${s.restore.pause_scheduler ? '<strong>The scheduler is paused.</strong>' : ''} Turn them back on only if this copy should really send email and run jobs.</span></div>
+  const addOnly = s.existing && !s.restore;
+  const url = s.existing ? `http://${s.site}:8000` : 'http://localhost:8000';
+  const restore = !s.restore || !(s.restore.mute_emails || s.restore.pause_scheduler || s.restore.sanitize) ? '' : `<section class="card"><h2>Restored copy: safety switches</h2>
+    <div class="note">${INFO}<span>This site was restored from a backup. ${s.restore.mute_emails ? '<strong>Outgoing email is muted.</strong> ' : ''}${s.restore.pause_scheduler ? '<strong>The scheduler is paused.</strong> ' : ''}${s.restore.sanitize ? '<strong>Email that was waiting to be sent is marked Error, and incoming mail, webhooks and SMS or Slack alerts are switched off.</strong> ' : ''}Turn them back on only if this copy should really send email and run jobs.</span></div>
     ${s.restore.mute_emails ? cmdline(`cd ${folder} && bench --site ${s.site} set-config mute_emails 0`) : ''}
     ${s.restore.pause_scheduler ? cmdline(`cd ${folder} && bench --site ${s.site} set-config pause_scheduler 0`) : ''}</section>`;
   const view = `<div class="hero"><div class="okc"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg></div>
-      <div><h1>Bench ready</h1><p>${esc(s.site)} was set up in ${duration(total)}. ${r.steps.length} steps ran; nothing is running yet.</p></div></div>
+      <div><h1>Bench ready</h1><p>${esc(s.site)} was ${addOnly ? 'updated' : 'set up'} in ${duration(total)}. ${r.steps.length} steps ran; nothing is running yet.</p></div></div>
     <section class="card"><h2>Start the bench</h2>
       ${S.toolsInstalled ? `<div class="note">${INFO}<span><strong>Open a new terminal first.</strong> Tools were installed in this session and are only on PATH in a fresh shell.</span></div>` : ''}
       ${cmdline(`cd ${folder} && nvm use && bench start`)}
       <p class="lead small"><span class="mono">nvm use</span> reads the <span class="mono">.nvmrc</span> in the bench folder, so Node ${esc(s.node)} is picked whatever the machine default is.</p></section>
     <section class="card"><h2>Site</h2><div class="kv">
-      <div><div class="k">URL</div><div class="v"><a href="http://localhost:8000" target="_blank" rel="noopener" class="mono">http://localhost:8000</a></div></div>
+      <div><div class="k">URL</div><div class="v"><a href="${esc(url)}" target="_blank" rel="noopener" class="mono">${esc(url)}</a></div></div>
       <div><div class="k">Site name</div><div class="v mono">${esc(s.site)}</div></div>
       <div><div class="k">Login</div><div class="v mono">Administrator</div></div>
-      <div><div class="k">Password</div><div class="v mono">${S.pw ? (S.showPw ? esc(S.pw) : '••••') + ` <a href="#" data-act="toggle-pw" class="small" style="font-family:var(--sans)">${S.showPw ? 'Hide' : 'Show'}</a>` : 'the one you entered in step 1'}</div></div>
+      <div><div class="k">Password</div><div class="v mono">${addOnly ? 'unchanged' : S.pw ? (S.showPw ? esc(S.pw) : '••••') + ` <a href="#" data-act="toggle-pw" class="small" style="font-family:var(--sans)">${S.showPw ? 'Hide' : 'Show'}</a>` : 'the one you entered in step 1'}</div></div>
       <div><div class="k">Bench folder</div><div class="v mono">${esc(folder)}</div></div>
-      <div><div class="k">Developer mode</div><div class="v">On</div></div></div></section>
+      <div><div class="k">Developer mode</div><div class="v">${s.existing ? 'unchanged' : 'On'}</div></div></div></section>
     ${restore}
-    <section class="card"><h2>Installed apps</h2><div class="chips"><span class="chip">frappe <span class="b">${esc(s.version)}</span></span>
+    <section class="card"><h2>${addOnly ? 'Apps added' : 'Installed apps'}</h2><div class="chips">${addOnly ? '' : `<span class="chip">frappe <span class="b">${esc(s.version)}</span></span>`}
       ${s.apps.map((a) => `<span class="chip">${esc(a.name)} <span class="b">${esc(a.branch)}</span></span>`).join('')}</div></section>
     <section class="card"><h2>Update later</h2>${cmdline(`cd ${folder} && nvm use && bench update --pull --build --patch`)}
       ${cmdline(`cd ${tilde(S.catalog.wizard_dir)} && git pull`)}
@@ -462,6 +532,22 @@ const VIEWS = { project: viewProject, check: viewCheck, apps: viewApps, review: 
 // ---------------------------------------------------------------- actions
 function validateProject() {
   const e = {};
+  if (S.mode === 'existing' && S.benchNew) {
+    const site = S.site.trim();
+    if (!/^[a-z0-9][a-z0-9.-]*$/.test(site)) e.site = 'Use lowercase letters, digits, dots and hyphens';
+    else if (S.bench.sites[site]) e.site = 'This bench already has a site with this name';
+    if (S.db && !/^[A-Za-z0-9_]+$/.test(S.db)) e.db = 'Use letters, digits and underscores';
+    if (!S.pw) e.pw = 'Enter a password for the Administrator user';
+    if (!S.rootPw) e.rootPw = 'Enter the MariaDB root password';
+    if (!S.restore.sql.trim()) e['restore.sql'] = 'Enter the path to the database backup';
+    S.errors = e;
+    return !Object.keys(e).length;
+  }
+  if (S.mode === 'existing') {
+    if (!S.bench || !S.benchSite) e.benchSite = 'Load the bench and pick a site';
+    S.errors = e;
+    return !Object.keys(e).length;
+  }
   if (!S.folder.trim()) e.folder = 'Enter a folder for the new bench';
   else if (/\s/.test(S.folder.trim())) e.folder = 'The path must not contain spaces; bench cannot work in such a folder';
   if (!/^[a-z0-9][a-z0-9.-]*$/.test(S.site.trim())) e.site = 'Use lowercase letters, digits, dots and hyphens';
@@ -526,13 +612,27 @@ async function setRoot() {
 
 async function inspectBackup() {
   const path = S.restore.sql.trim();
-  if (!path || S.siteData !== 'restore') return;
+  if (!path || !restoring()) return;
   S.backupMsg = '';
   try {
     const res = await api('POST', '/api/backup/inspect', { path });
     if (res.ok) { S.backup = res; S.backupPath = S.restore.sql; } else { S.backup = null; S.backupMsg = res.error; }
   } catch (err) { S.backupMsg = err.message; }
   if (S.step === 'project') render();
+}
+
+async function loadBench() {
+  const folder = S.benchFolder.trim();
+  if (!folder) { S.benchMsg = 'Enter the bench folder'; return render(); }
+  S.benchBusy = true; S.benchMsg = ''; render();
+  try {
+    S.bench = await api('POST', '/api/bench/inspect', { folder });
+    S.version = S.bench.version;
+    const readable = Object.keys(S.bench.sites).filter((n) => S.bench.sites[n].apps);
+    S.benchSite = readable.length === 1 ? readable[0] : '';
+    S.benchNew = false;
+  } catch (err) { S.bench = null; S.benchSite = ''; S.benchMsg = err.message; }
+  S.benchBusy = false; render();
 }
 
 function mergeApp(app) {
@@ -604,7 +704,10 @@ async function buildPlan() {
   S.planning = true; S.plan = null; S.planMsg = ''; S.runMsg = ''; render();
   const apps = selectedApps().filter(([n]) => n !== 'frappe')
     .map(([name, a]) => ({ name, repo: a.repo, branch: a.branch, title: a.title }));
-  const body = {
+  const body = isExisting() && S.benchNew ? {
+    existing: true, folder: S.bench.folder, site: S.site.trim(), db_name: S.db.trim(), admin_password: S.pw,
+    mariadb_root_password: S.rootPw, apps, restore: S.restore,
+  } : isExisting() ? { existing: true, folder: S.bench.folder, site: S.benchSite, apps } : {
     version: S.version, folder: S.folder.trim(), site: S.site.trim(), db_name: S.db.trim(), admin_password: S.pw,
     mariadb_root_password: S.rootPw, apps, restore: S.siteData === 'restore' ? S.restore : null,
   };
@@ -682,13 +785,22 @@ const BACK = { check: 'project', apps: 'check', review: 'apps' };
 
 const ACTIONS = {
   goto: (arg) => go(arg),
-  back: () => go(BACK[S.step]),
+  back: () => go(S.step === 'apps' && S.mode === 'existing' ? 'project' : BACK[S.step]),
   next: () => {
     if (S.step === 'project' && !validateProject()) return render();
     if (S.step === 'apps' && S.depWarn) return;
-    go(NEXT[S.step]);
+    go(S.step === 'project' && S.mode === 'existing' ? 'apps' : NEXT[S.step]);
   },
   version: (arg) => { pickVersion(arg); render(); },
+  mode: (arg) => {
+    S.mode = arg; S.errors = {};
+    // the loaded bench decides the version; a new bench starts from the default again
+    S.version = arg === 'existing' && S.bench ? S.bench.version : S.catalog.default_version;
+    render();
+  },
+  'load-bench': loadBench,
+  'bench-site': (arg) => { S.benchSite = arg; S.benchNew = false; S.errors = {}; render(); },
+  'bench-new': () => { S.benchNew = true; S.benchSite = ''; S.errors = {}; render(); inspectBackup(); },
   preset: (arg) => { applyPreset(arg); render(); },
   sitedata: (arg) => { S.siteData = arg; render(); if (arg === 'restore') inspectBackup(); },
   recheck: () => loadChecks(true),
@@ -713,7 +825,7 @@ const ACTIONS = {
   restart: async () => {
     if (source) source.close();
     try { await api('POST', '/api/run/dismiss', {}); } catch (err) { /* a running run stays */ }
-    Object.assign(S, { run: null, plan: null, logs: {}, step: 'project', reached: 0, folderEdited: false, siteEdited: false, appsKey: '', showPw: false });
+    Object.assign(S, { run: null, plan: null, logs: {}, step: 'project', reached: 0, folderEdited: false, siteEdited: false, appsKey: '', showPw: false, bench: null, benchSite: '', benchNew: false });
     applyPreset(S.preset); render();
   },
   'reveal-extension': async () => {
@@ -742,7 +854,7 @@ document.addEventListener('input', (ev) => {
     setPath(el.dataset.bind, el.value);
     if (el.dataset.bind === 'folder') S.folderEdited = true;
     if (el.dataset.bind === 'site') S.siteEdited = true;
-    if (el.dataset.bind === 'rootPw' && S.rootOk !== null) {
+    if (el.dataset.bind === 'rootPw' && S.rootOk !== null && S.step === 'check') {
       // Patch in place: re-rendering here would swallow a click on Verify.
       S.rootOk = null;
       $('root-note').innerHTML = '';
@@ -765,6 +877,7 @@ document.addEventListener('change', (ev) => {
 document.addEventListener('keydown', (ev) => {
   if (ev.key !== 'Enter' || !ev.target.dataset || !ev.target.dataset.bind) return;
   if (ev.target.dataset.bind === 'rootPw') verifyRoot();
+  if (ev.target.dataset.bind === 'benchFolder') loadBench();
   if (ev.target.dataset.bind.startsWith('custom.')) addCustom();
 });
 

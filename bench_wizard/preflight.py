@@ -39,6 +39,9 @@ class Probe:
         rc, out = checks.run_cmd(argv, env, timeout=30)
         return checks._first_version(out) if rc == 0 else ""
 
+    def node_installed(self, node):
+        return bool(checks.node_bin(node))
+
 
 def _existing_ancestor(path):
     path = os.path.dirname(path)
@@ -62,8 +65,14 @@ def run(answers, resolution, backup_info, catalog, env, probe=None):
     profile = catalog["frappe_versions"][version]
     restore = answers.get("restore")
 
-    ancestor = _existing_ancestor(folder)
-    if os.path.lexists(folder):
+    existing = answers.get("existing")
+    ancestor = folder if existing else _existing_ancestor(folder)
+    if existing:
+        writable = os.access(os.path.join(folder, "apps"), os.W_OK | os.X_OK)
+        what = f"can take the new site {answers['site']}" if restore else f"has site {answers['site']}"
+        add(writable, f"Bench folder {folder} {what}" if writable
+            else f"Cannot write to {folder}/apps, so no app can be added")
+    elif os.path.lexists(folder):
         add(False, f"Bench folder {folder} already exists")
     elif not os.access(ancestor, os.W_OK | os.X_OK):
         add(False, f"Cannot write to {ancestor}, so bench folder {folder} cannot be created")
@@ -71,7 +80,9 @@ def run(answers, resolution, backup_info, catalog, env, probe=None):
         add(True, f"Bench folder {folder} does not exist")
 
     password = answers.get("mariadb_root_password", "")
-    if not probe.root_password_ok(password):
+    if existing and not restore:
+        pass  # install-app uses the site's own database login
+    elif not probe.root_password_ok(password):
         add(False, "MariaDB root password was not accepted")
     elif answers.get("db_name"):
         taken = probe.database_exists(answers["db_name"], password)
@@ -80,7 +91,7 @@ def run(answers, resolution, backup_info, catalog, env, probe=None):
     else:
         add(True, "MariaDB root password accepted; bench will choose the database name")
 
-    need = BASE_BYTES
+    need = BASE_BYTES // 3 if existing else BASE_BYTES
     if restore:
         for key, label in (("sql", "Database backup"), ("public", "Public files"), ("private", "Private files")):
             path = restore.get(key)
@@ -95,7 +106,7 @@ def run(answers, resolution, backup_info, catalog, env, probe=None):
     add(free >= need, f"{_gb(free)} free on the target filesystem ({_gb(need)} needed)")
 
     frappe = catalog["apps"]["frappe"]
-    remotes = [("Frappe", frappe["repo"], frappe["branches"].get(version, version))]
+    remotes = [] if existing else [("Frappe", frappe["repo"], frappe["branches"].get(version, version))]
     remotes += [(resolution.apps[n]["title"], resolution.apps[n]["repo"], resolution.apps[n]["branch"])
                 for n in resolution.order]
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -112,19 +123,25 @@ def run(answers, resolution, backup_info, catalog, env, probe=None):
     for error in resolution.errors:
         add(False, error)
 
-    python = f"python{profile['python']}"
-    found = probe.tool_version([python, "--version"], env)
-    add(found, f"{python} is available ({found})" if found else f"{python} was not found")
+    if not existing:  # an existing bench brings its own Python in env/
+        python = f"python{profile['python']}"
+        found = probe.tool_version([python, "--version"], env)
+        add(found, f"{python} is available ({found})" if found else f"{python} was not found")
     found = probe.tool_version(["bench", "--version"], env)
     add(found, f"Bench CLI {found} is available" if found else "Bench CLI was not found")
+    node = answers.get("node") or resolution.node or profile["node"]
+    found = probe.node_installed(node)
+    add(found, f"Node {node} is installed with nvm" if found
+        else f"Node {node} is not installed with nvm. Fix: nvm install {node}")
 
     if restore:
         apps = backup_info.apps if backup_info else {}
         if not apps:
             add(True, "Could not read the app list from this backup; app checks skipped")
         else:
+            chosen = set(resolution.apps) | {a["name"] for a in answers.get("apps", ())}
             for name in apps:
-                if name != "frappe" and name not in resolution.apps:
+                if name != "frappe" and name not in chosen:
                     add(True, f"The backup contains {name}, which is not selected. It will be removed "
                               f"from the site's installed apps after the restore; its data stays.")
             target = int(version.split("-")[-1]) if version.split("-")[-1].isdigit() else None
