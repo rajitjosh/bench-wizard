@@ -201,6 +201,8 @@ def _procs_ps():
 
 
 def _inside(path, folder):
+    # A process's cwd comes with symlinks resolved (on macOS /var is /private/var), so the folder must be too.
+    folder = os.path.realpath(folder)
     return path == folder or path.startswith(folder + os.sep)
 
 
