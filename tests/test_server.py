@@ -1,5 +1,6 @@
 import http.client
 import json
+import os
 import tempfile
 import threading
 import time
@@ -486,9 +487,43 @@ class ServerTest(unittest.TestCase):
     def test_projects_add_remembers_a_bench_outside_home(self):
         from tests.test_projects import make_bench
         outside = make_bench(self.tmp / "elsewhere" / "bench")
-        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": str(self.tmp)})[0], 400)
-        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": outside})[0], 200)
-        self.assertIn(outside, [x["folder"] for x in self.request("GET", "/api/projects")[1]["benches"]])
+        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": str(self.tmp / "nope")})[0], 400)
+        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": "/"})[0], 400)
+        for empty in ("", "  ", None):
+            self.assertEqual(self.request("POST", "/api/projects/add", {"folder": empty})[0], 400)
+        self.assertFalse((self.tmp / "state" / "folders.json").exists())
+        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": outside})[1]["kind"], "bench")
+        bench = self.request("GET", "/api/projects")[1]["benches"][0]
+        self.assertEqual((bench["folder"], bench["added"]), (outside, True))
+        self.request("POST", "/api/projects/remove", {"folder": outside})
+        self.assertEqual(self.request("GET", "/api/projects")[1]["benches"], [])
+
+    def test_browsing_lists_folders_and_marks_benches(self):
+        from tests.test_projects import make_bench
+        root = self.tmp / "home"
+        bench = make_bench(root / "acme-bench")
+        (root / "Zeta").mkdir()
+        (root / ".hidden").mkdir()
+        (root / "notes.txt").write_text("")
+        status, d = self.request("GET", "/api/folders")  # the home folder first
+        self.assertEqual((status, d["path"], d["parent"]), (200, str(root), str(self.tmp)))
+        self.assertEqual([(f["name"], f["bench"]) for f in d["folders"]], [("acme-bench", True), ("Zeta", False)])
+        self.assertTrue(self.request("GET", "/api/folders?path=" + bench)[1]["bench"])
+        self.assertIsNone(self.request("GET", "/api/folders?path=/")[1]["parent"])
+        self.assertEqual(self.request("GET", "/api/folders?path=" + str(root / "nope"))[0], 400)
+
+    def test_folders_added_are_searched_for_benches_until_removed(self):
+        from tests.test_projects import make_bench
+        srv = self.tmp / "srv"
+        one, two = make_bench(srv / "client-a" / "frappe-bench"), make_bench(srv / "client-b")
+        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": str(srv)})[1]["kind"], "folder")
+        self.request("POST", "/api/projects/add", {"folder": str(srv)})  # twice: listed once
+        data = self.request("GET", "/api/projects")[1]
+        self.assertEqual((data["folders"], [b["folder"] for b in data["benches"]]), ([str(srv)], [one, two]))
+        self.assertFalse(any(b["added"] for b in data["benches"]))
+        self.request("POST", "/api/projects/remove", {"folder": str(srv)})
+        data = self.request("GET", "/api/projects")[1]
+        self.assertEqual((data["folders"], data["benches"]), ([], []))
 
     def test_start_bench_checks_ports_then_starts_it(self):
         from tests.test_projects import make_bench
@@ -554,6 +589,72 @@ class ServerTest(unittest.TestCase):
         status, res = self.request("POST", "/api/plan", dict(self.answers(), version="version-13"))
         self.assertEqual(status, 400)
         self.assertIn("Version 15, Version 16 only", res["error"])
+
+    def test_bench_page_reads_the_bench_and_plans_its_actions(self):
+        from bench_wizard import projects
+        from tests.test_projects import make_bench
+        folder = make_bench(self.tmp / "home" / "b", projects.slot(0), sites=("a.localhost", "b.localhost"))
+        (Path(folder) / "logs").mkdir()
+        (Path(folder) / "logs" / "web.log").write_text("hello\n")
+        status, d = self.request("GET", "/api/bench/detail?folder=" + folder)
+        self.assertEqual((status, d["sites"], [l["name"] for l in d["logs"]], d["backups"]), (200, ["a.localhost", "b.localhost"], ["web.log"], []))
+        self.assertEqual(self.request("GET", f"/api/bench/log?folder={folder}&name=web.log")[1]["text"], "hello\n")
+        plan = lambda **body: self.request("POST", "/api/plan", dict(body, folder=folder))
+        status, p = plan(op="backup")
+        self.assertEqual((status, [s["id"] for s in p["steps"]], p["title"]), (200, ["backup-a.localhost", "backup-b.localhost"], "Back up 2 sites"))
+        self.assertTrue(self.app.pending["parallel"])
+        status, p = plan(op="drop", site="a.localhost", root_password="rootpw")
+        self.assertEqual(status, 200)
+        self.assertNotIn("rootpw", json.dumps(p))
+        self.assertEqual(plan(op="drop", site="nope.localhost", root_password="x")[0], 400)
+        self.assertEqual(plan(op="uninstall", site="a.localhost", app="hrms")[0], 400)  # not in the bench
+        (Path(folder) / "apps" / "hrms" / ".git").mkdir(parents=True)
+        self.assertEqual(plan(op="uninstall", site="a.localhost", app="hrms")[1]["title"], "Uninstall hrms from a.localhost")
+        self.assertEqual(plan(op="update-app", app="hrms", branch="version-16")[1]["title"], "Switch hrms to version-16")
+        self.assertEqual(plan(op="explode")[0], 400)
+
+    def test_site_config_and_login_need_a_site_of_the_bench(self):
+        from tests.test_projects import make_bench
+        folder = make_bench(self.tmp / "home" / "b")
+        (Path(folder) / "sites" / "a.localhost" / "site_config.json").write_text('{"db_name": "x", "db_password": "pw"}')
+        status, c = self.request("GET", f"/api/site/config?folder={folder}&site=a.localhost")
+        self.assertEqual(json.loads(c["text"]), {"db_name": "x", "db_password": "********"})
+        self.assertEqual(self.request("POST", "/api/site/config", {"folder": folder, "site": "a.localhost", "text": "{"})[0], 400)
+        self.assertEqual(self.request("GET", f"/api/site/config?folder={folder}&site=zz")[0], 400)
+        from bench_wizard import projects
+        real = projects.usage
+        projects.usage = lambda folders: {}
+        self.addCleanup(setattr, projects, "usage", real)
+        status, res = self.request("POST", "/api/site/login", {"folder": folder, "site": "a.localhost"})
+        self.assertEqual(status, 409)
+        self.assertIn("start the bench", res["error"])
+
+    def test_frappe_cloud_access_backups_and_download_plan(self):
+        from unittest import mock
+        from bench_wizard import frappecloud
+        from tests.test_projects import make_bench
+        folder = make_bench(self.tmp / "home" / "b")
+        replies = {"request_access": {"token": "T", "approval_url": "https://cloud/a"}, "get_status": {"status": "Approved"},
+                   "get_running_backup": None, "get_backups": [{"name": "b1", "created_at": "2026-11-17", "size": 5}],
+                   "get_download_links": {"database": "https://s3/20261117-shop-database.sql.gz?sig=S"}, "revoke": None}
+        urls = []
+
+        def fake_call(method, token="", url=frappecloud.SITE, **kw):
+            urls.append(url)
+            return replies[method]
+        with mock.patch.object(frappecloud, "call", fake_call):
+            self.assertEqual(self.request("GET", "/api/cloud/site?domain=shop.frappe.cloud")[0], 400)  # no access yet
+            status, c = self.request("POST", "/api/cloud/connect", {"domain": "shop.frappe.cloud", "url": "https://press.example.org"})
+            self.assertEqual((status, c["status"], len(c["code"]), c["url"]), (200, "Pending", 8, "https://press.example.org"))
+            self.assertEqual(os.stat(self.tmp / "state" / "frappe-cloud.json").st_mode & 0o777, 0o600)
+            site = self.request("GET", "/api/cloud/site?domain=shop.frappe.cloud")[1]
+            self.assertEqual((site["status"], site["backups"][0]["name"]), ("Approved", "b1"))
+            status, p = self.request("POST", "/api/plan", {"op": "fc-download", "folder": folder, "domain": "shop.frappe.cloud", "backup": "b1"})
+            self.assertEqual((status, [s["id"] for s in p["steps"]]), (200, ["fc-folder", "download-database"]))
+            self.assertNotIn("sig=S", json.dumps(p))
+            self.assertEqual(set(urls), {"https://press.example.org"})  # every later call goes to the site's own address
+            self.request("POST", "/api/cloud/disconnect", {"domain": "shop.frappe.cloud"})
+            self.assertEqual(self.request("GET", f"/api/bench/detail?folder={folder}")[1]["cloud"], [])
 
     def test_build_plan(self):
         a, _ = self.two_clashing_benches()

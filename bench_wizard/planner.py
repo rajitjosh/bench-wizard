@@ -66,9 +66,61 @@ def _site_name(site):
 
 
 def plan_migrate(answers):
-    """`bench migrate` for each site of an existing bench; the runner runs these side by side."""
+    """`bench migrate` for each site of an existing bench; the runner runs these side by side.
+
+    With `backup`, each site is backed up first, in the same step, so its migrate waits for its own backup.
+    """
+    if answers.get("backup"):
+        both = 'bench --site "$1" backup --with-files && bench --site "$1" migrate'
+        return [Step(f"migrate-{site}", f"back up and migrate {site}", ["sh", "-c", both, "sh", _site_name(site)],
+                     answers["folder"]) for site in answers["sites"]]
     return [Step(f"migrate-{site}", f"migrate {site}", ["bench", "--site", _site_name(site), "migrate"],
                  answers["folder"]) for site in answers["sites"]]
+
+
+def plan_backup(folder, sites):
+    return [Step(f"backup-{site}", f"back up {site}", ["bench", "--site", _site_name(site), "backup", "--with-files"],
+                 folder) for site in sites]
+
+
+def plan_drop(folder, site, root_password):
+    """Drop a site. bench backs it up first and moves its folder to archived_sites, so it can be restored."""
+    if not root_password:
+        raise PlanError("the MariaDB root password is required to drop a site")
+    argv = ["bench", "drop-site", _site_name(site), "--db-root-password", root_password]
+    return [Step("drop-site", f"drop-site {site}", argv, folder, _secret_after(argv, "--db-root-password"))]
+
+
+def plan_uninstall(folder, site, app):
+    """Remove an app from one site; bench backs the site up first. The app stays in the bench."""
+    return [Step(f"uninstall-{app}", f"uninstall-app {app} from {site}",
+                 ["bench", "--site", _site_name(site), "uninstall-app", _site_name(app), "--yes"], folder)]
+
+
+def plan_app_update(folder, app, branch=None):
+    """Pull an app's new commits, or move it to another branch, then bring the bench up to it."""
+    app = _site_name(app)
+    first = (Step("switch", f"switch {app} to {branch}", ["bench", "switch-to-branch", _site_name(branch), app, "--upgrade"],
+                  folder) if branch else
+             Step("pull", f"pull {app}", ["bench", "update", "--pull", "--apps", app], folder))
+    return [first,
+            Step("requirements", "bench setup requirements", ["bench", "setup", "requirements"], folder),
+            Step("migrate", "migrate every site", ["bench", "--site", "all", "migrate"], folder),
+            Step("build", f"build {app}", ["bench", "build", "--app", app], folder)]
+
+
+def plan_download(folder, domain, links):
+    """Download a Frappe Cloud backup's files into fc-backups/<domain>/ of the bench, under their own names."""
+    target = os.path.join(folder, "fc-backups", _site_name(domain))
+    steps = [Step("fc-folder", "make the download folder", ["mkdir", "-p", target], folder)]
+    for kind, (name, url) in links.items():
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name) or not url.startswith("https://"):
+            raise PlanError("Frappe Cloud sent a download this wizard will not fetch")
+        argv = ["curl", "-fsSL", "--retry", "3", "-w", "%{size_download} bytes in %{time_total} s\\n",
+                "-o", os.path.join(target, name), url]
+        # the link is signed, so it is a credential while it lasts
+        steps.append(Step(f"download-{kind}", f"download {name}", argv, folder, (len(argv) - 1,)))
+    return steps
 
 
 PROCFILE_PORT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "procfile_port.py")

@@ -17,7 +17,7 @@ from . import checks as checks_mod
 from concurrent.futures import ThreadPoolExecutor
 
 from . import deps, desktop, existing as existing_mod, gitauth, planner, preflight as preflight_mod, projects
-from . import marketplace as market_mod
+from . import frappecloud, marketplace as market_mod, sites as sites_mod
 from .runner import Runner
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -206,6 +206,8 @@ class App:
 
     # -- plan and run --------------------------------------------------
     def post_plan(self, query, body):
+        if body.get("op"):
+            return self._plan_op(body)
         if body.get("ports"):
             return self._plan_ports(body)
         if body.get("build"):
@@ -351,7 +353,7 @@ class App:
             raise ApiError(400, f"not a site of this bench: {', '.join(unknown)}")
         profile = self._profile(bench.version)
         node = bench.node or existing_mod.nvm_default_node() or profile["node"]
-        answers = {"folder": bench.folder, "sites": sites}
+        answers = {"folder": bench.folder, "sites": sites, "backup": bool(body.get("backup"))}
         steps = self._steps(planner.plan_migrate, answers)
         summary = dict(self._bench_summary(bench.folder, bench.version, node), site=", ".join(sites), migrate=sites,
                        title=f"Migrate {sites[0] if len(sites) == 1 else f'{len(sites)} sites'}")
@@ -390,29 +392,34 @@ class App:
         return self._hold(steps, self.checks.build_env(node), [], summary, [], [])
 
     # -- projects ------------------------------------------------------
-    def _known_path(self):
-        return os.path.join(self.state_root, "benches.json")
-
-    def _known(self):
-        """Bench folders added by hand or created here, which a scan of the home folder may not reach."""
+    def _list(self, name):
+        """A list of folders kept in the state folder: benches.json (benches added by hand or created here)
+        or folders.json (folders searched for benches besides the home folder)."""
         try:
-            with open(self._known_path()) as fh:
+            with open(os.path.join(self.state_root, name)) as fh:
                 data = json.load(fh)
         except (OSError, ValueError):
             return []
         return [f for f in data if isinstance(f, str)] if isinstance(data, list) else []
 
+    def _save_list(self, name, folders):
+        os.makedirs(self.state_root, exist_ok=True)
+        with open(os.path.join(self.state_root, name), "w") as fh:
+            json.dump(folders, fh, indent=1)
+
+    def _known(self):
+        return self._list("benches.json")
+
     def _remember(self, folder):
         known = self._known()
         if folder not in known:
-            os.makedirs(self.state_root, exist_ok=True)
-            with open(self._known_path(), "w") as fh:
-                json.dump(known + [folder], fh, indent=1)
+            self._save_list("benches.json", known + [folder])
 
     def _benches(self):
-        folders = projects.discover(self.home)
-        folders += [f for f in self._known() if f not in folders and projects.is_bench(f)]
-        return [projects.bench_info(f) for f in folders]
+        found = [f for root in [self.home] + self._list("folders.json") for f in projects.discover(root)]
+        scanned = set(found)
+        found += [f for f in self._known() if projects.is_bench(f)]
+        return [dict(projects.bench_info(f), added=f not in scanned) for f in dict.fromkeys(found)]
 
     def _planned_ports(self, benches):
         """(folder, ports) of new benches still being set up by a run, so no other bench gets their ports."""
@@ -435,15 +442,55 @@ class App:
             bench.update(version_title=(profile or {}).get("title") or existing_mod.version_title(bench["version"]), clashes=shared[bench["folder"]],
                          running=None if used is None else bench["folder"] in used,
                          rss=(used or {}).get(bench["folder"], {}).get("rss"))
-        return {"benches": benches, "resources": self.resources(self.home),
+        return {"benches": benches, "resources": self.resources(self.home), "home": self.home,
+                "folders": self._list("folders.json"),
                 "running": None if used is None else len(used)}
 
     def post_projects_add(self, query, body):
-        folder = os.path.abspath(os.path.expanduser(str(body.get("folder", ""))))
-        if not projects.is_bench(folder):
-            raise ApiError(400, f"{folder} is not a bench: apps/frappe or sites is missing")
-        self._remember(folder)
-        return {"ok": True, "folder": folder}
+        """A bench folder joins the list; any other folder is searched for benches from now on."""
+        folder = str(body.get("folder") or "").strip()
+        if not folder:  # "" would mean the folder the wizard was started in
+            raise ApiError(400, "enter a folder, or pick one with Browse…")
+        folder = os.path.abspath(os.path.expanduser(folder))
+        if projects.is_bench(folder):
+            self._remember(folder)
+            return {"ok": True, "folder": folder, "kind": "bench"}
+        if not os.path.isdir(folder):
+            raise ApiError(400, f"{folder} is not a folder on this machine")
+        if folder == os.path.dirname(folder):
+            raise ApiError(400, "searching the whole disk would take too long; add the folder that holds your benches")
+        folders = self._list("folders.json")
+        if folder != self.home and folder not in folders:
+            self._save_list("folders.json", folders + [folder])
+        return {"ok": True, "folder": folder, "kind": "folder"}
+
+    def get_folders(self, query, body):
+        """The folders in one folder, benches marked, for browsing to a folder on the Projects screen."""
+        path = os.path.abspath(os.path.expanduser(query.get("path") or self.home))
+
+        def is_dir(entry):
+            try:
+                return entry.is_dir()
+            except OSError:
+                return False
+        try:
+            entries = sorted((e for e in os.scandir(path) if not e.name.startswith(".") and is_dir(e)),
+                             key=lambda e: e.name.lower())
+        except OSError as exc:
+            raise ApiError(400, f"cannot open {path}: {exc.strerror}")
+        parent = os.path.dirname(path)
+        return {"path": path, "parent": parent if parent != path else None, "bench": projects.is_bench(path),
+                "folders": [{"name": e.name, "path": e.path, "bench": projects.is_bench(e.path)} for e in entries[:500]],
+                "more": max(0, len(entries) - 500)}
+
+    def post_projects_remove(self, query, body):
+        """Forget a searched folder or a bench added by hand; nothing on disk is touched."""
+        folder = str(body.get("folder", ""))
+        for name in ("folders.json", "benches.json"):
+            kept = self._list(name)
+            if folder in kept:
+                self._save_list(name, [f for f in kept if f != folder])
+        return {"ok": True}
 
     def post_ports_allocate(self, query, body):
         """New ports for every bench that shares one with another; running benches keep theirs."""
@@ -482,6 +529,180 @@ class App:
             raise ApiError(400, "this system cannot tell which processes belong to the bench (no /proc, ps or lsof); press Ctrl+C where it runs")
         if not stopped:
             raise ApiError(409, "nothing of this bench is running")
+        return {"ok": True}
+
+    # -- one bench up close ----------------------------------------------
+    def _site_of(self, info, site):
+        if site not in info["sites"]:
+            raise ApiError(400, f"{site or 'that'} is not a site of this bench")
+        return site
+
+    def _app_of(self, info, app):
+        if not app or not os.path.isdir(os.path.join(info["folder"], "apps", str(app), ".git")):
+            raise ApiError(400, f"{app or 'that'} is not an app of this bench")
+        return app
+
+    def get_bench_detail(self, query, body):
+        info, node = self._light_bench(query.get("folder"))
+        folder = info["folder"]
+        used = projects.usage([folder])
+        return dict(info, version_title=self._profile(info["version"])["title"], node=node,
+                    running=None if used is None else folder in used, apps=sites_mod.apps(folder),
+                    backups=sites_mod.backups(folder), logs=sites_mod.logs(folder),
+                    cloud=sorted(self._cloud()))
+
+    def post_bench_updates(self, query, body):
+        """Fetch each app's remote branch, so the page can say how many commits each is behind."""
+        info, _ = self._light_bench(body.get("folder"))
+        return {"apps": sites_mod.apps(info["folder"], fetch=True)}
+
+    def post_bench_branches(self, query, body):
+        info, _ = self._light_bench(body.get("folder"))
+        app = next((a for a in sites_mod.apps(info["folder"]) if a["name"] == self._app_of(info, body.get("app"))), None)
+        if not app["remote"]:
+            raise ApiError(400, f"{app['name']} has no remote to read branches from")
+        try:
+            return {"branches": market_mod.branches(app["remote"], app["branch"], env=self._git_env())}
+        except market_mod.MarketplaceError as exc:
+            raise ApiError(400, str(exc))
+
+    def get_bench_log(self, query, body):
+        info, _ = self._light_bench(query.get("folder"))
+        offset = query.get("offset", "")
+        try:
+            return sites_mod.read_log(info["folder"], query.get("name", ""), int(offset) if offset.isdigit() else None)
+        except sites_mod.SiteError as exc:
+            raise ApiError(400, str(exc))
+
+    def post_site_login(self, query, body):
+        info, node = self._light_bench(body.get("folder"))
+        site = self._site_of(info, body.get("site"))
+        used = projects.usage([info["folder"]])
+        if used is not None and info["folder"] not in used:  # None: this system cannot tell, so let it try
+            raise ApiError(409, "start the bench first: a sign-in is kept in the bench's Redis")
+        try:
+            url = sites_mod.login_url(info["folder"], site, info["ports"]["webserver_port"], self.checks.build_env(node))
+        except sites_mod.SiteError as exc:
+            raise ApiError(400, str(exc))
+        return {"url": url}
+
+    def get_site_config(self, query, body):
+        info, _ = self._light_bench(query.get("folder"))
+        try:
+            return {"text": sites_mod.read_config(info["folder"], self._site_of(info, query.get("site")))}
+        except (sites_mod.SiteError, OSError, ValueError) as exc:
+            raise ApiError(400, f"cannot read site_config.json: {exc}")
+
+    def post_site_config(self, query, body):
+        info, _ = self._light_bench(body.get("folder"))
+        try:
+            sites_mod.write_config(info["folder"], self._site_of(info, body.get("site")), str(body.get("text", "")))
+        except sites_mod.SiteError as exc:
+            raise ApiError(400, str(exc))
+        return {"ok": True}
+
+    def _plan_op(self, body):
+        """The bench page's buttons that change something: each is a plan that runs like any other."""
+        info, node = self._light_bench(body.get("folder"))
+        folder, op = info["folder"], body.get("op")
+        site, app = body.get("site"), body.get("app")
+        if op == "backup":
+            sites = body.get("sites") or info["sites"]
+            steps = self._steps(planner.plan_backup, folder, [self._site_of(info, s) for s in sites])
+            title = f"Back up {sites[0] if len(sites) == 1 else f'{len(sites)} sites'}"
+        elif op == "drop":
+            steps = self._steps(planner.plan_drop, folder, self._site_of(info, site), str(body.get("root_password", "")))
+            title = f"Drop {site}"
+        elif op == "uninstall":
+            steps = self._steps(planner.plan_uninstall, folder, self._site_of(info, site), self._app_of(info, app))
+            title = f"Uninstall {app} from {site}"
+        elif op == "update-app":
+            branch = body.get("branch") or None
+            steps = self._steps(planner.plan_app_update, folder, self._app_of(info, app), branch)
+            title = f"Switch {app} to {branch}" if branch else f"Update {app}"
+        elif op == "fc-download":
+            domain = str(body.get("domain", ""))
+            try:
+                found = frappecloud.links(self._cloud_token(domain), str(body.get("backup", "")), url=self._cloud_url(domain))
+            except frappecloud.CloudError as exc:
+                raise ApiError(400, str(exc))
+            steps = self._steps(planner.plan_download, folder, domain, found)
+            title = f"Download {domain} backup"
+        else:
+            raise ApiError(400, f"unknown action: {op}")
+        summary = dict(self._bench_summary(folder, info["version"], node), title=title, site=site or "", op=op)
+        parallel = op == "backup"  # each site's backup is its own
+        return self._hold(steps, self.checks.build_env(node), [], summary, [], [], parallel=parallel)
+
+    # -- Frappe Cloud backups --------------------------------------------
+    def _cloud_path(self):
+        return os.path.join(self.state_root, "frappe-cloud.json")
+
+    def _cloud(self):
+        """{domain: {token, code, approval_url}}; the tokens stay in this file, readable by this user only."""
+        try:
+            with open(self._cloud_path()) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_cloud(self, data):
+        os.makedirs(self.state_root, exist_ok=True)
+        fd = os.open(self._cloud_path() + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh)
+        os.replace(self._cloud_path() + ".new", self._cloud_path())
+
+    def _cloud_token(self, domain):
+        found = self._cloud().get(domain)
+        if not found:
+            raise ApiError(400, f"ask Frappe Cloud for access to {domain} first")
+        return found["token"]
+
+    def _cloud_url(self, domain):
+        return (self._cloud().get(domain) or {}).get("url") or frappecloud.SITE  # saved before addresses were kept
+
+    def _cloud_call(self, method, domain, **kw):
+        try:
+            return frappecloud.call(method, self._cloud_token(domain), url=self._cloud_url(domain), **kw)
+        except frappecloud.CloudError as exc:
+            raise ApiError(400, str(exc))
+
+    def post_cloud_connect(self, query, body):
+        try:
+            access = frappecloud.request_access(str(body.get("domain", "")), str(body.get("url") or frappecloud.SITE))
+        except frappecloud.CloudError as exc:
+            raise ApiError(400, str(exc))
+        domain = str(body["domain"]).strip().lower()
+        self._save_cloud(dict(self._cloud(), **{domain: access}))
+        return {"domain": domain, "code": access["code"], "approval_url": access["approval_url"], "url": access["url"],
+                "status": "Pending"}
+
+    def get_cloud_site(self, query, body):
+        """The request's status and, once approved, the site's backups."""
+        domain = query.get("domain", "")
+        saved = self._cloud().get(domain) or {}
+        status = (self._cloud_call("get_status", domain) or {}).get("status", "")
+        backups = self._cloud_call("get_backups", domain, params={"start": 0}) if status == "Approved" else []
+        return {"domain": domain, "status": status, "code": saved.get("code", ""), "approval_url": saved.get("approval_url", ""),
+                "url": self._cloud_url(domain),
+                "running": self._cloud_call("get_running_backup", domain) if status == "Approved" else None,
+                "backups": [{"name": b.get("name"), "when": b.get("created_at"), "size": b.get("size")} for b in backups or []]}
+
+    def post_cloud_backup(self, query, body):
+        return {"name": self._cloud_call("take_backup", str(body.get("domain", "")), data={})}
+
+    def post_cloud_disconnect(self, query, body):
+        domain = str(body.get("domain", ""))
+        saved = self._cloud()
+        if domain in saved:
+            try:
+                frappecloud.call("revoke", saved[domain]["token"], data={}, url=self._cloud_url(domain))
+            except frappecloud.CloudError:
+                pass  # forgotten here either way; Frappe Cloud lets an unused request lapse
+            del saved[domain]
+            self._save_cloud(saved)
         return {"ok": True}
 
     # -- marketplace ---------------------------------------------------
@@ -609,6 +830,19 @@ class App:
         ("GET", "/api/runs"): get_runs,
         ("GET", "/api/projects"): get_projects,
         ("POST", "/api/projects/add"): post_projects_add,
+        ("POST", "/api/projects/remove"): post_projects_remove,
+        ("GET", "/api/folders"): get_folders,
+        ("GET", "/api/bench/detail"): get_bench_detail,
+        ("POST", "/api/bench/updates"): post_bench_updates,
+        ("POST", "/api/bench/branches"): post_bench_branches,
+        ("GET", "/api/bench/log"): get_bench_log,
+        ("POST", "/api/site/login"): post_site_login,
+        ("GET", "/api/site/config"): get_site_config,
+        ("POST", "/api/site/config"): post_site_config,
+        ("POST", "/api/cloud/connect"): post_cloud_connect,
+        ("GET", "/api/cloud/site"): get_cloud_site,
+        ("POST", "/api/cloud/backup"): post_cloud_backup,
+        ("POST", "/api/cloud/disconnect"): post_cloud_disconnect,
         ("POST", "/api/ports/allocate"): post_ports_allocate,
         ("POST", "/api/bench/start"): post_bench_start,
         ("POST", "/api/bench/stop"): post_bench_stop,

@@ -52,6 +52,23 @@ class RunnerTest(unittest.TestCase):
         self.wait(r, "done")
         self.assertEqual(count.read_text().count("x"), 1)
 
+    def test_a_failed_migrate_says_which_patch_and_why(self):
+        r = self.runner([sh("migrate-a", "echo 'Executing app.patches.fix in a (_db)'; "
+                                         "echo \"pymysql.err.IntegrityError: (1062, Duplicate entry 'x')\"; exit 1"),
+                         sh("build", "exit 1")])
+        events = r.subscribe()
+        r.start()
+        snap = self.wait(r, "failed")
+        diag = snap["steps"][0]["diagnosis"]
+        self.assertEqual((diag["patch"], diag["kind"]), ("app.patches.fix", "Duplicate rows"))
+        failed = []
+        while not events.empty():
+            e = events.get_nowait()
+            if e.get("type") == "step" and e["state"] == "failed":
+                failed.append(e)
+        self.assertEqual(failed[0]["diagnosis"], diag)
+        self.assertIsNone(snap["steps"][1]["diagnosis"])
+
     def test_parallel_cancel_stops_every_step(self):
         r = self.runner([sh("a", "sleep 30"), sh("b", "sleep 30")], parallel=True)
         r.start()

@@ -7,6 +7,7 @@ import threading
 import time
 
 from .gitauth import scrub
+from .sites import diagnose
 
 
 class Runner:
@@ -57,8 +58,15 @@ class Runner:
                 "state": self._states[s.id], "duration": self._durations[s.id],
                 "cleanup": s.display(s.cleanup, s.cleanup_secret_args) if s.cleanup else None,
                 "cleanup_required": s.cleanup_required,
+                "diagnosis": self._diagnosis(s),
             } for s in self.steps],
         }
+
+    def _diagnosis(self, step):
+        """Why a failed migrate failed: the patch it was in and what the error usually means."""
+        if self._states[step.id] == "failed" and step.id.startswith("migrate"):
+            return diagnose(self.read_log(step.id))
+        return None
 
     def log_path(self, step_id):
         return os.path.join(self.log_dir, f"{step_id}.log")
@@ -77,7 +85,8 @@ class Runner:
     def _set_step(self, step, state, duration=None):
         self._states[step.id] = state
         self._durations[step.id] = duration
-        self._publish({"type": "step", "id": step.id, "state": state, "duration": duration})
+        self._publish({"type": "step", "id": step.id, "state": state, "duration": duration,
+                       "diagnosis": self._diagnosis(step)})
 
     def _log(self, step, line):
         line = scrub(line)  # a credential inside a URL must not reach the log

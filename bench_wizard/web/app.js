@@ -18,13 +18,18 @@ const S = {
   run: null, activeStep: '', follow: true, logs: {}, cleanup: true, runMsg: '', showPw: false,
   runs: [], pwFor: {}, benchMigrate: false, migrateSites: {},
   proj: null, projFilter: 'all', projBusy: '', projMsg: '', projNote: '', projSite: {}, portEdits: {}, addFolder: '',
-  mpApps: null, mpQuery: '', mpBusy: false, mpMsg: '', mp: null, mpBranch: '',
+  mpApps: null, mpQuery: '', mpBusy: false, mpMsg: '', mp: null, mpBranch: '', migrateBackup: true, bp: null, fx: null,
 };
+
+// Every answer as the page first had it, for "Start over"; what is not an answer (checks, runs, projects) is kept.
+const FRESH = JSON.stringify(S);
+const KEEP = ['catalog', 'checks', 'mac', 'checksVersion', 'toolsInstalled', 'ext', 'run', 'runs', 'pwFor', 'follow', 'logs',
+  'activeStep', 'cleanup', 'proj', 'projFilter', 'projSite', 'portEdits', 'addFolder', 'mpApps', 'bp', 'fx'];
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const tilde = (p) => (S.catalog && p.startsWith(S.catalog.home + '/') ? '~' + p.slice(S.catalog.home.length) : p);
+const tilde = (p) => (S.catalog && (p === S.catalog.home || p.startsWith(S.catalog.home + '/')) ? '~' + p.slice(S.catalog.home.length) : p);
 const profile = () => S.catalog.frappe_versions[S.version];
 // Material icons (Apache 2.0), filled, on the 24px grid; one style everywhere.
 const PATHS = {
@@ -33,12 +38,15 @@ const PATHS = {
   apps: 'M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z',
   arrow_back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z',
   arrow_forward: 'M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z',
+  arrow_upward: 'M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z',
   auto_awesome: 'M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z',
   build: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z',
   check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
   close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+  restart_alt: 'M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8zm-6 8c0-1.65.67-3.15 1.76-4.24L6.34 7.34C4.9 8.79 4 10.79 4 13c0 4.08 3.05 7.44 7 7.93v-2.02c-2.83-.48-5-2.94-5-5.91z',
   contrast: 'M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.86 7 7.93s-3.06 7.44-7 7.93V4.07z',
   create_new_folder: 'M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z',
+  folder: 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
   dark_mode: 'M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z',
   dns: 'M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z',
   info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
@@ -173,14 +181,18 @@ function render() {
   }).join('');
   $('rail-foot').textContent = S.runs.some((r) => r.state === 'running') ? 'Closing this window does not stop runs. Reopen the URL shown in the terminal to come back.'
     : 'Nothing is written to disk until you press Start on the Review screen.';
+  // Up to Review only: once Start is pressed, the run has the answers and the wizard is fresh again anyway.
+  $('rail-reset').innerHTML = !locked && index >= 0 && index < 4
+    ? `<button class="btn sm" data-act="start-over" title="Clear every choice and go back to the Project step">${icon('restart_alt', 18)}Start over</button>` : '';
   paintRuns();
-  const wide = S.step === 'run' || S.step === 'projects';
+  const wide = S.step === 'run' || S.step === 'projects' || S.step === 'bench';
   $('view').className = 'col' + (wide ? ' wide' : '');
   $('footer').className = 'in2' + (wide ? ' wide' : '');
   const [view, footer] = VIEWS[S.step]();
   $('view').innerHTML = view;
   $('footer').innerHTML = footer;
   if (S.step === 'run') paintLog();
+  if (S.step === 'bench') paintBenchLog();
 }
 
 const field = (label, key, opts = {}) => `
@@ -211,6 +223,7 @@ function viewExisting() {
     + radio('bench-migrate', '', S.benchMigrate, 'Migrate sites', 'Run bench migrate on several sites of this bench at the same time.');
   const migrate = !b || !S.benchMigrate ? '' : `<section class="card"><h2>Sites to migrate</h2>
     ${Object.keys(b.sites).map((name) => `<label class="tog"><input type="checkbox" data-msite="${esc(name)}" ${S.migrateSites[name] ? 'checked' : ''}><span class="mono">${esc(name)}</span></label>`).join('')}
+    <label class="tog"><input type="checkbox" data-check="migrateBackup" ${S.migrateBackup ? 'checked' : ''}>Back up each site first, with its files</label>
     <p class="lead small">Each site migrates in its own process, side by side, with its own log.</p></section>`;
   const ready = b && (S.benchSite || S.benchNew || (S.benchMigrate && migrateList().length));
   const newSite = !b || !S.benchNew ? '' : `<section class="card"><h2>New site</h2><div class="grid2">
@@ -467,14 +480,15 @@ function viewProjects() {
     const e = S.portEdits[b.folder] || {};
     const site = S.projSite[b.folder] || '';
     const busy = S.projBusy === b.folder;
-    return `<tr><td><div class="bench"><span class="av ${b.running ? 'on' : ''}">${icon('dns')}</span><div class="nm">${esc(tilde(b.folder))}
+    return `<tr><td><div class="bench"><span class="av ${b.running ? 'on' : ''}">${icon('dns')}</span><div class="nm"><button class="linkbtn mono" data-act="bench-open" data-arg="${esc(b.folder)}" title="Sites, apps, backups and logs of this bench">${esc(tilde(b.folder)).replace(/\//g, '/<wbr>')}</button>
         <div class="sub">${esc(b.version_title)}${b.running ? `<span class="state-on"><i class="pip"></i>Running${b.rss ? ', ' + gb(b.rss) : ''}</span>` : ''}</div></div></div></td>
       <td><select class="in sm" data-projsite="${esc(b.folder)}" aria-label="Site of ${esc(tilde(b.folder))}" ${b.sites.length ? '' : 'disabled'}>
         ${b.sites.length ? `<option value="">All sites (${b.sites.length})</option>` + b.sites.map((n) => `<option ${n === site ? 'selected' : ''}>${esc(n)}</option>`).join('') : '<option>no sites</option>'}</select></td>
-      <td class="acts">${b.running ? `<button class="btn sm stop" data-act="proj-stop" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''}>${icon('stop', 18)}Stop</button>`
-    : `<button class="btn sm tonal" data-act="proj-start" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''}>${icon('play_arrow', 18)}Start</button>`}
-        <button class="btn sm" data-act="proj-migrate" data-arg="${esc(b.folder)}" ${busy || !b.sites.length ? 'disabled' : ''}>${icon('sync', 18)}Migrate</button>
-        <button class="btn sm" data-act="proj-build" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''}>${icon('build', 18)}Build</button></td>
+      <td class="acts">${b.running ? `<button class="btn sm stop" data-act="proj-stop" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''} title="Stop" aria-label="Stop">${icon('stop', 18)}<span class="lbl">Stop</span></button>`
+    : `<button class="btn sm tonal" data-act="proj-start" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''} title="Start" aria-label="Start">${icon('play_arrow', 18)}<span class="lbl">Start</span></button>`}
+        <button class="btn sm" data-act="proj-migrate" data-arg="${esc(b.folder)}" ${busy || !b.sites.length ? 'disabled' : ''} title="Migrate" aria-label="Migrate">${icon('sync', 18)}<span class="lbl">Migrate</span></button>
+        <button class="btn sm" data-act="proj-build" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''} title="Build" aria-label="Build">${icon('build', 18)}<span class="lbl">Build</span></button>
+        <button class="btn sm primary" data-act="bench-open" data-arg="${esc(b.folder)}" title="Sites, apps, backups and logs: open as Administrator, back up, update apps">Manage${ARROW}</button></td>
       ${PORT_COLS.map(([key]) => {
     const value = e[key] != null ? e[key] : b.ports[key];
     const cls = e[key] != null && e[key] !== b.ports[key] ? 'changed' : b.clashes.includes(b.ports[key]) ? 'bad' : '';
@@ -491,12 +505,54 @@ function viewProjects() {
       <button class="fchip" aria-pressed="${S.projFilter === 'running'}" data-act="proj-filter" data-arg="running" ${p.running == null ? 'disabled title="This system cannot tell which benches are running"' : ''}>${S.projFilter === 'running' ? icon('check', 18) : ''}<i class="pip on"></i>Running <span>${running.length}</span></button>
     </div>
     <div style="overflow-x:auto"><table class="tbl proj"><thead><tr><th>Bench</th><th>Site</th><th></th>${PORT_COLS.map(([, l]) => `<th>${l}</th>`).join('')}</tr></thead>
-    <tbody>${rows || `<tr><td colspan="8" class="sub">${S.projFilter === 'running' ? 'No bench is running. Show all benches and press Start on one.' : 'No benches found under your home folder. Add one below.'}</td></tr>`}</tbody></table></div>
+    <tbody>${rows || `<tr><td colspan="8" class="sub">${S.projFilter === 'running' ? 'No bench is running. Show all benches and press Start on one.' : 'No benches found in the folders below. Add the folder that holds yours.'}</td></tr>`}</tbody></table></div>
     <p class="lead small" style="padding:0 16px 16px">New ports take effect the next time the bench starts; a running bench keeps its old ports until then. Highlighted ports are shared with another bench.</p></section>`;
-  const add = `<section class="card"><h2>Add a bench</h2><div class="grid2 end">
-      ${field('Bench folder', 'addFolder', { mono: true, value: S.addFolder, placeholder: '/srv/benches/client-bench', hint: 'For a bench outside your home folder, or deeper than three folders in it' })}
-      <div><button class="btn" data-act="proj-add">${icon('create_new_folder', 18)}Add bench</button></div></div></section>`;
+  const forget = (f, what) => `<button class="chip-x" data-act="proj-remove" data-arg="${esc(f)}" aria-label="Stop ${what} ${esc(tilde(f))}" title="Remove from the list; nothing on disk changes">${icon('close', 16)}</button>`;
+  const added = p.benches.filter((b) => b.added);
+  const add = `<section class="card"><h2>Where benches are found</h2>
+      <p class="lead small">Each folder here is searched three folders deep. Removing one only takes it off this list.</p>
+      <div class="chips"><span class="chip path mono">${icon('folder', 16)}${esc(tilde(p.home))} <span class="via">home folder</span></span>
+        ${p.folders.map((f) => `<span class="chip path mono">${icon('folder', 16)}${esc(tilde(f))}${forget(f, 'searching')}</span>`).join('')}
+        ${added.map((b) => `<span class="chip path mono">${icon('dns', 16)}${esc(tilde(b.folder))}${forget(b.folder, 'listing')}</span>`).join('')}</div>
+      <div class="grid2 end" style="margin-top:16px">
+      ${field('Folder', 'addFolder', { mono: true, value: S.addFolder, placeholder: 'Type a path, or use Browse…', hint: 'A folder that holds benches, such as /srv/benches, or one bench folder' })}
+      <div class="acts"><button class="btn" data-act="proj-add">${icon('create_new_folder', 18)}Add folder</button>
+        <button class="btn" data-act="fx-open" ${S.fx ? 'disabled' : ''}>${icon('folder', 18)}Browse…</button></div></div>${explorer()}</section>`;
   return [head + (S.projMsg ? `<div class="note bad">${INFO}<span style="white-space:pre-wrap">${esc(S.projMsg)}</span></div>` : '') + res + table + add, footer];
+}
+
+// A folder browser in the page: the server lists folder names only, so it works on every system and marks benches.
+function explorer() {
+  const fx = S.fx;
+  if (!fx) return '';
+  // Inside the home folder the path starts at ~, as everywhere else on the page; elsewhere at / (the top of the disk).
+  const home = S.catalog.home;
+  const inHome = fx.path === home || (fx.path || '').startsWith(home + '/');
+  const base = inHome ? home : '';
+  const parts = (fx.path || '').slice(base.length).split('/').filter(Boolean);
+  const crumbs = `<button data-act="fx-go" data-arg="${esc(base || '/')}" aria-label="${inHome ? 'Your home folder' : 'The top of the disk'}">${inHome ? '~' : '/'}</button>`
+    + parts.map((part, i) => `${i || inHome ? '<span class="sep" aria-hidden="true">/</span>' : ''}<button data-act="fx-go" data-arg="${esc(base + '/' + parts.slice(0, i + 1).join('/'))}">${esc(part)}</button>`).join('');
+  const rows = (fx.folders || []).map((f) => `<div class="fx-row"><button class="fx-open" data-act="fx-go" data-arg="${esc(f.path)}">${icon(f.bench ? 'dns' : 'folder', 18)}<span>${esc(f.name)}</span>${f.bench ? '<span class="badge blue">Bench</span>' : ''}</button>
+      ${f.bench ? `<button class="btn sm tonal" data-act="fx-add" data-arg="${esc(f.path)}">Add bench</button>` : ''}</div>`).join('');
+  return `<div class="fx" role="group" aria-label="Choose a folder">
+    <div class="fx-head"><button class="btn sm" data-act="fx-go" data-arg="${esc(fx.parent || '')}" ${fx.parent && !fx.busy ? '' : 'disabled'}>${icon('arrow_upward', 18)}Up</button>
+      <nav class="crumbs mono" aria-label="Folder path">${crumbs}</nav></div>
+    ${fx.msg ? `<div class="note bad" style="margin:12px">${INFO}<span>${esc(fx.msg)}</span></div>` : ''}
+    <div class="fx-list">${fx.busy ? '<p class="fx-empty"><span class="spin"></span> Opening…</p>' : rows || '<p class="fx-empty">No folders in here.</p>'}
+      ${fx.more ? `<p class="fx-empty">and ${fx.more} more folders not shown</p>` : ''}</div>
+    <div class="acts"><button class="btn sm primary" data-act="fx-add" data-arg="${esc(fx.path || '')}" ${fx.busy || !fx.path ? 'disabled' : ''}>${icon('check', 18)}${fx.bench ? 'Add this bench' : 'Search this folder'}</button>
+      <button class="btn sm" data-act="fx-close">Cancel</button>
+      <span class="lead small">${fx.bench ? 'This folder is a bench.' : 'Benches up to three folders below it are listed.'}</span></div></div>`;
+}
+
+async function browseTo(path) {
+  S.fx = Object.assign(S.fx || {}, { busy: true, msg: '' }); render();
+  try { Object.assign(S.fx, await api('GET', '/api/folders' + (path ? '?path=' + encodeURIComponent(path) : '')), { busy: false }); }
+  catch (err) { S.fx.busy = false; S.fx.msg = err.message; }
+  if (S.step !== 'projects') return;
+  render();
+  const first = document.querySelector('.fx-list button');
+  if (first) first.focus({ preventScroll: true });
 }
 
 async function loadProjects() {
@@ -638,6 +694,13 @@ function viewReview() {
 
 const ICON = { done: icon('check', 16), failed: icon('priority_high', 16), running: '<span class="spin"></span>' };
 
+// Why a migrate failed, after Pilot's diagnosis: the patch it was in and what such an error usually means.
+const diagnosis = (steps) => steps.filter((s) => s.state === 'failed' && s.diagnosis).map((s) => {
+  const d = s.diagnosis;
+  return `<div class="note bad diag">${INFO}<div><strong>${esc(s.title)}${d.kind ? ': ' + esc(d.kind) : ' failed'}</strong>${d.patch ? ` in the patch <span class="mono">${esc(d.patch)}</span>` : ''}.
+    ${d.hint ? esc(d.hint[0].toUpperCase() + d.hint.slice(1)) + '.' : ''}${d.error ? `<code class="mono">${esc(d.error)}</code>` : ''}</div></div>`;
+}).join('');
+
 function viewRun() {
   const r = S.run;
   const steps = r.steps;
@@ -680,7 +743,7 @@ function viewRun() {
     <div class="split"><div class="card flush list"><div class="loghead"><h2>Steps</h2></div>${list}</div>
       <div class="card flush logp"><div class="loghead"><span class="mono c">${esc(active.command)}</span>
         <label class="tog small"><input type="checkbox" data-check="follow" ${S.follow ? 'checked' : ''}>Follow output</label>
-        <button class="btn sm" data-act="copy" data-arg="log">Copy log</button></div><pre class="log" id="log"></pre></div></div>${fail}`;
+        <button class="btn sm" data-act="copy" data-arg="log">Copy log</button></div><pre class="log" id="log"></pre></div></div>${fail}${diagnosis(steps)}`;
   const footer = `<span class="lead small">Logs: <span class="mono">${esc(tilde(r.log_dir))}</span></span><div class="right">
     ${r.state === 'running' ? '<button class="btn danger" data-act="cancel">Cancel run</button>' : ''}
     <button class="btn primary" data-act="finish" ${r.state === 'done' ? '' : 'disabled'}>Finish ${ARROW}</button></div>`;
@@ -710,6 +773,12 @@ function viewDone() {
       <div><h1>Sites migrated</h1><p>${s.migrate.length} site${s.migrate.length === 1 ? '' : 's'} in <span class="mono">${esc(folder)}</span> migrated side by side in ${duration(longest)}.</p></div></div>
       <section class="card"><h2>Sites</h2><div class="chips">${r.steps.map((st) => `<span class="chip">${esc(st.title.replace(/^migrate /, ''))} <span class="b">${duration(st.duration)}</span></span>`).join('')}</div></section>
       <section class="card"><h2>Start the bench</h2>${cmdline(`cd ${folder} && nvm use && bench start`)}</section>`, footer];
+  }
+  if (s.op) {
+    return [`<div class="hero"><div class="okc">${CHECK_BIG}</div>
+      <div><h1>${esc(s.title)}: done</h1><p><span class="mono">${esc(folder)}</span> in ${duration(total)}.</p></div></div>
+      ${s.op === 'fc-download' ? `<div class="note info">${INFO}<span>The backup is in <span class="mono">${esc(folder)}/fc-backups</span>. Back on the bench, it is listed under Backups, ready to restore as a new site.</span></div>` : ''}`,
+    `<span class="lead small">Logs: <span class="mono">${esc(tilde(r.log_dir))}</span></span><div class="right"><button class="btn primary" data-act="bench-back">${icon('arrow_back', 18)}Back to the bench</button></div>`];
   }
   if (s.title) {
     return [`<div class="hero"><div class="okc">${CHECK_BIG}</div>
@@ -746,7 +815,308 @@ function viewDone() {
   return [view, footer];
 }
 
-const VIEWS = { project: viewProject, check: viewCheck, apps: viewApps, review: viewReview, run: viewRun, done: viewDone, projects: viewProjects };
+// ---------------------------------------------------------------- one bench
+// The bench page: its sites, apps, backups and logs, read from the bench each time it opens.
+const freshBench = (folder) => ({ folder, d: null, busy: 'load', msg: '', note: '', sites: null, checked: false,
+  branches: {}, pick: {}, cfg: null, drop: null, migBackup: true, fcDomain: '', fcUrl: 'https://cloud.frappe.io', fc: {},
+  log: { name: '', lines: [], offset: null, q: '', errors: false, follow: true } });
+const ERROR_LINE = /\b(ERROR|CRITICAL|FATAL)\b|\[(error|crit|alert|emerg)\]|Traceback \(most recent call last\)|^\s*[\w.]*(Error|Exception)\b:/;
+const when = (t) => new Date(typeof t === 'number' ? t * 1000 : t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+const size = (n) => (n >= 1024 ** 3 ? gb(n) : n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
+
+function openBench(folder) {
+  if (!S.run && S.step !== 'projects' && S.step !== 'bench') S.wizStep = S.step;
+  if (S.run) detachRun();
+  S.bp = freshBench(folder);
+  go('bench');
+}
+
+async function loadBenchPage() {
+  const bp = S.bp;
+  bp.busy = 'load'; bp.msg = ''; render();
+  try { bp.d = await api('GET', '/api/bench/detail?folder=' + encodeURIComponent(bp.folder)); } catch (err) { bp.msg = err.message; }
+  bp.busy = ''; render();
+  if (!bp.d) return;
+  if (!bp.log.name && bp.d.logs.length) openLog(bp.d.logs[0].name);
+  bp.d.cloud.forEach((domain) => cloudCheck(domain));
+  // installed apps per site come from the sites' databases, which is slower: filled in when read
+  try { bp.sites = (await api('POST', '/api/bench/inspect', { folder: bp.folder })).sites; } catch (err) { bp.sites = {}; bp.sitesMsg = err.message; }
+  if (S.step === 'bench' && S.bp === bp) render();
+}
+
+// Plan, then start at once, as the Projects screen does; the run screen shows it, with Back to the bench at the end.
+async function benchRun(body, ask) {
+  if (ask && !confirm(ask)) return;
+  S.bp.busy = 'run'; S.bp.msg = ''; render();
+  try {
+    const plan = await api('POST', '/api/plan', Object.assign({ folder: S.bp.folder }, body));
+    if (!plan.ok) throw new Error(plan.checks.filter((c) => !c.ok).map((c) => c.label).join('; '));
+    const res = await api('POST', '/api/run', {});
+    S.bp.busy = '';
+    attachRun(res.run_id); refreshRuns();
+  } catch (err) { S.bp.msg = err.message; S.bp.busy = ''; render(); }
+}
+
+async function openLog(name) {
+  const log = S.bp.log;
+  Object.assign(log, { name, lines: [], offset: null });
+  try {
+    const res = await api('GET', `/api/bench/log?folder=${encodeURIComponent(S.bp.folder)}&name=${encodeURIComponent(name)}`);
+    Object.assign(log, { lines: res.text.split('\n'), offset: res.offset });
+  } catch (err) { log.lines = [err.message]; }
+  if (S.step === 'bench') render();
+}
+
+// Followed logs are polled; only the log box is repainted, so typing elsewhere on the page is not disturbed.
+setInterval(async () => {
+  const log = S.step === 'bench' && S.bp && S.bp.log;
+  if (!log || !log.follow || !log.name || log.offset == null || document.hidden) return;
+  try {
+    const res = await api('GET', `/api/bench/log?folder=${encodeURIComponent(S.bp.folder)}&name=${encodeURIComponent(log.name)}&offset=${log.offset}`);
+    if (!res.text) return;
+    const tail = log.lines.pop() + res.text;  // the last line may have been only half written
+    log.lines = log.lines.concat(tail.split('\n')).slice(-5000);
+    log.offset = res.offset;
+    paintBenchLog();
+  } catch (err) { /* the bench may be gone; the next tick tries again */ }
+}, 2000);
+
+function paintBenchLog() {
+  const el = $('bp-log');
+  if (!el) return;
+  const { lines, q, errors, follow } = S.bp.log;
+  const needle = q.trim().toLowerCase();
+  const shown = lines.filter((l) => (!needle || l.toLowerCase().includes(needle)) && (!errors || ERROR_LINE.test(l)));
+  el.innerHTML = shown.length ? shown.map((l) => (ERROR_LINE.test(l) ? `<span class="eline">${esc(l)}</span>` : esc(l))).join('\n')
+    : `<span class="sub">${lines.length > 1 || lines[0] ? 'No line matches.' : 'This log is empty.'}</span>`;
+  const count = $('bp-log-count');
+  if (count) count.textContent = `${shown.length} of ${lines.length} lines`;
+  if (follow) el.scrollTop = el.scrollHeight;
+}
+
+async function cloudCheck(domain) {
+  const fc = S.bp.fc;
+  fc[domain] = Object.assign(fc[domain] || {}, { busy: true });
+  if (S.step === 'bench') render();
+  try { fc[domain] = await api('GET', '/api/cloud/site?domain=' + encodeURIComponent(domain)); } catch (err) { fc[domain] = { domain, msg: err.message }; }
+  if (S.step === 'bench') render();
+}
+
+// A backup listed here becomes the "New site from a backup" form of this bench, filled in.
+async function restoreAsNewSite(i) {
+  const b = S.bp.d.backups[i];
+  Object.assign(S, { mode: 'existing', benchFolder: S.bp.folder, wizStep: '' });
+  await loadBench();
+  if (!S.bench) { S.step = 'project'; return render(); }
+  Object.assign(S, { benchNew: true, benchSite: '', benchMigrate: false, siteEdited: true,
+    site: b.site.split(/[ .]/)[0].replace(/[^a-z0-9-]/gi, '-').toLowerCase() + '-copy.localhost' });
+  Object.assign(S.restore, { sql: b.db, public: b.public, private: b.private });
+  go('project');
+  inspectBackup();
+}
+
+function viewBench() {
+  const bp = S.bp;
+  const d = bp.d;
+  const busy = !!bp.busy;
+  const back = `<button class="btn" data-act="projects">${icon('arrow_back', 18)}Projects</button>`;
+  if (!d) {
+    return [`<div class="head"><h1>${esc(tilde(bp.folder))}</h1></div>
+      ${bp.msg ? `<div class="note bad">${INFO}<span>${esc(bp.msg)}</span></div>` : '<p class="lead"><span class="spin"></span> Reading the bench…</p>'}`, back];
+  }
+  const run = d.running;
+  const head = `<div class="row" style="align-items:flex-end"><div class="head"><h1>${esc(tilde(d.folder))}</h1>
+      <p class="lead">${esc(d.version_title)} · web on port <span class="mono">${esc(d.ports.webserver_port)}</span> · Node ${esc(d.node || '?')}</p></div>
+      ${run == null ? '' : run ? '<span class="badge green"><i class="pip"></i>Running</span>' : '<span class="badge">Stopped</span>'}</div>
+    ${bp.msg ? `<div class="note bad">${INFO}<span style="white-space:pre-wrap">${esc(bp.msg)}</span></div>` : ''}
+    ${bp.note ? `<div class="note info">${INFO}<span>${esc(bp.note)}</span></div>` : ''}`;
+
+  // Sites: open signed in, back up, edit config, drop; their apps, each removable
+  const siteRows = d.sites.map((site) => {
+    const info = bp.sites && bp.sites[site];
+    const apps = !bp.sites ? '<span class="sub">Reading apps…</span>' : !info ? '' : info.apps
+      ? `<div class="chips">${info.apps.map((a) => `<span class="chip path mono">${esc(a)}${a === 'frappe' ? '' : `<button class="chip-x" data-act="bp-uninstall" data-arg="${esc(site + '|' + a)}" aria-label="Uninstall ${esc(a)} from ${esc(site)}" title="Uninstall from this site">${icon('close', 16)}</button>`}</span>`).join('')}</div>`
+      : `<span class="sub">${esc(info.error)}</span>`;
+    let extra = '';
+    if (bp.cfg && bp.cfg.site === site) {
+      extra = `<tr class="xrow"><td colspan="3"><label class="f"><span>site_config.json of ${esc(site)}</span>
+        <textarea class="in area mono" data-bind="bp.cfg.text" rows="14" spellcheck="false">${esc(bp.cfg.text)}</textarea>
+        <span class="hint">Secrets show as ******** and keep their value unless you replace them. Changes apply the next time the site loads its config.</span></label>
+        ${bp.cfg.msg ? `<div class="note bad">${INFO}<span>${esc(bp.cfg.msg)}</span></div>` : ''}
+        <div class="acts"><button class="btn sm primary" data-act="bp-config-save">${icon('check', 18)}Save</button><button class="btn sm" data-act="bp-config-close">Cancel</button></div></td></tr>`;
+    } else if (bp.drop && bp.drop.site === site) {
+      extra = `<tr class="xrow"><td colspan="3"><div class="note bad">${INFO}<span><strong>Drop ${esc(site)}?</strong> bench backs it up first and moves its folder to <span class="mono">archived_sites</span>; its database is deleted.</span></div>
+        <div class="grid2 end">${field('MariaDB root password', 'bp.drop.pw', { type: 'password', value: bp.drop.pw })}
+        <div class="acts"><button class="btn sm danger" data-act="bp-drop-go" ${busy ? 'disabled' : ''}>Drop site</button><button class="btn sm" data-act="bp-drop-close">Cancel</button></div></div></td></tr>`;
+    }
+    return `<tr><td class="mono">${esc(site)}</td><td>${apps}</td>
+      <td class="acts"><button class="btn sm tonal" data-act="bp-login" data-arg="${esc(site)}" ${busy || run === false ? 'disabled' : ''} title="${run === false ? 'Start the bench first' : 'Open the desk signed in as Administrator'}">${icon('arrow_forward', 18)}Open as Administrator</button>
+        <button class="btn sm" data-act="bp-backup" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('storage', 18)}Back up</button>
+        <button class="btn sm" data-act="bp-config" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('build', 18)}Config</button>
+        <button class="btn sm danger" data-act="bp-drop" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('close', 18)}Drop</button></td></tr>${extra}`;
+  }).join('');
+  const sites = `<section class="card flush"><div class="loghead"><h2>Sites</h2><div class="right">
+      <label class="tog small"><input type="checkbox" data-check="bp.migBackup" ${bp.migBackup ? 'checked' : ''}>Back up first</label>
+      <button class="btn sm" data-act="bp-migrate" ${busy || !d.sites.length ? 'disabled' : ''}>${icon('sync', 18)}Migrate all</button>
+      <button class="btn sm" data-act="bp-backup" ${busy || !d.sites.length ? 'disabled' : ''}>${icon('storage', 18)}Back up all</button></div></div>
+    <div style="overflow-x:auto"><table class="tbl stack"><thead><tr><th>Site</th><th>Apps installed</th><th></th></tr></thead>
+    <tbody>${siteRows || '<tr><td colspan="3" class="sub">This bench has no sites.</td></tr>'}</tbody></table></div></section>`;
+
+  // Apps: branch and commit; after a check, how far behind; update, or move to another branch
+  const appRows = d.apps.map((a) => {
+    const status = a.error ? `<span class="badge red">${esc(a.error)}</span>`
+      : !bp.checked ? (a.changed ? '<span class="badge amber">Local changes</span>' : '')
+        : `${a.behind ? `<span class="badge blue">${a.behind} new commit${a.behind === 1 ? '' : 's'}</span>` : a.behind === 0 ? '<span class="badge green">Up to date</span>' : ''}${a.changed ? ' <span class="badge amber">Local changes</span>' : ''}`;
+    const list = bp.branches[a.name];
+    const switcher = list ? `<select class="in sm" data-bind="bp.pick.${esc(a.name)}" aria-label="Branch for ${esc(a.name)}">${list.map((b) => `<option ${b === bp.pick[a.name] ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select>
+        <button class="btn sm" data-act="bp-switch" data-arg="${esc(a.name)}" ${busy ? 'disabled' : ''}>Switch</button>`
+      : `<button class="btn sm" data-act="bp-branches" data-arg="${esc(a.name)}" ${busy || a.error || !a.remote ? 'disabled' : ''}>Change branch</button>`;
+    return `<tr><td class="mono">${esc(a.name)}</td><td class="mono">${esc(a.branch)}</td>
+      <td class="mono">${esc(a.commit)} <span class="sub">${esc(a.date)}</span></td><td>${status}</td>
+      <td class="acts">${a.behind && bp.checked ? `<button class="btn sm tonal" data-act="bp-update" data-arg="${esc(a.name)}" ${busy ? 'disabled' : ''}>${icon('sync', 18)}Update</button>` : ''}${switcher}</td></tr>`;
+  }).join('');
+  const apps = `<section class="card flush"><div class="loghead"><h2>Apps</h2><div class="right">
+      <button class="btn sm" data-act="bp-check" ${busy ? 'disabled' : ''}>${bp.busy === 'check' ? '<span class="spin"></span> Checking…' : icon('refresh', 18) + 'Check for updates'}</button></div></div>
+    <div style="overflow-x:auto"><table class="tbl stack"><thead><tr><th>App</th><th>Branch</th><th>Commit</th><th>Status</th><th></th></tr></thead><tbody>${appRows}</tbody></table></div>
+    <p class="lead small" style="padding:0 16px 16px">Update and Change branch pull the app, then run <span class="mono">bench setup requirements</span>, migrate every site and build the app's assets.</p></section>`;
+
+  // Backups: on disk, and Frappe Cloud's; any of them becomes a new site
+  const backupRows = d.backups.map((b, i) => `<tr><td class="mono">${esc(b.site)}</td><td>${esc(when(b.when))}</td>
+      <td><div class="chips">${[['db', 'Database'], ['public', 'Public files'], ['private', 'Private files']].filter(([k]) => b[k]).map(([, l]) => `<span class="chip">${l}</span>`).join('')}</div></td>
+      <td>${size(b.size)}</td><td class="acts"><button class="btn sm" data-act="bp-restore" data-arg="${i}" ${busy ? 'disabled' : ''}>${icon('add', 18)}Restore as a new site</button></td></tr>`).join('');
+  const cloud = d.cloud.map((domain) => {
+    const c = bp.fc[domain] || {};
+    const remove = `<button class="btn sm" data-act="bp-fc-remove" data-arg="${esc(domain)}">Remove</button>`;
+    let body;
+    if (c.busy) body = '<span class="sub"><span class="spin"></span> Asking Frappe Cloud…</span>';
+    else if (c.msg) body = `<span class="err">${esc(c.msg)}</span> <button class="btn sm" data-act="bp-fc-check" data-arg="${esc(domain)}">Check again</button> ${remove}`;
+    else if (c.status === 'Approved') {
+      body = `<span class="badge green">Approved</span> ${c.running ? '<span class="badge blue">A backup is being taken</span>' : ''}
+        <table class="tbl stack"><tbody>${c.backups.map((b) => `<tr><td class="mono">${esc(b.name)}</td><td>${b.when ? esc(when(b.when)) : ''}</td><td>${b.size ? size(b.size) : ''}</td>
+          <td class="acts"><button class="btn sm tonal" data-act="bp-fc-download" data-arg="${esc(domain + '|' + b.name)}" ${busy ? 'disabled' : ''}>Download into this bench</button></td></tr>`).join('') || '<tr><td class="sub">No backups yet.</td></tr>'}</tbody></table>
+        <div class="acts"><button class="btn sm" data-act="bp-fc-take" data-arg="${esc(domain)}">Take a new backup</button><button class="btn sm" data-act="bp-fc-check" data-arg="${esc(domain)}">${icon('refresh', 18)}Refresh</button>${remove}</div>`;
+    } else {
+      body = `<span class="badge amber">${esc(c.status || 'Pending')}</span>
+        <p class="lead small">The site's owner approves this on Frappe Cloud${c.approval_url ? ` (<a href="${esc(c.approval_url)}" target="_blank" rel="noopener">open the approval page</a>)` : ''}, checking that it shows the code <strong class="mono">${esc(c.code)}</strong>.</p>
+        <div class="acts"><button class="btn sm" data-act="bp-fc-check" data-arg="${esc(domain)}">${icon('refresh', 18)}Check again</button>${remove}</div>`;
+    }
+    const via = c.url && c.url !== 'https://cloud.frappe.io' ? ` <span class="via">on ${esc(c.url.replace('https://', ''))}</span>` : '';
+    return `<div class="fcsite"><h3><span class="mono">${esc(domain)}</span>${via}</h3>${body}</div>`;
+  }).join('');
+  const backups = `<section class="card flush"><div class="loghead"><h2>Backups</h2></div>
+    ${backupRows ? `<div style="overflow-x:auto"><table class="tbl stack"><thead><tr><th>Site</th><th>Taken</th><th>Files</th><th>Size</th><th></th></tr></thead><tbody>${backupRows}</tbody></table></div>`
+    : '<p class="lead small" style="padding:0 16px">No backups in this bench yet. Back up a site above to make one.</p>'}
+    <p class="lead small" style="padding:8px 16px 0">To copy a site, back it up, then restore that backup as a new site. The new site starts with outgoing email muted and the scheduler paused.</p>
+    <div class="fc"><h3>From Frappe Cloud</h3>
+      <p class="lead small">Ask for access to a site on Frappe Cloud. Once its owner approves, its backups can be downloaded into this bench and restored here.</p>
+      <div class="grid2">${field('Frappe Cloud site', 'bp.fcDomain', { mono: true, value: bp.fcDomain, placeholder: 'mysite.frappe.cloud' })}
+      ${field('Frappe Cloud address', 'bp.fcUrl', { mono: true, value: bp.fcUrl, placeholder: 'https://cloud.frappe.io', hint: 'Change it only for an organisation that runs its own Frappe Cloud (Press)' })}</div>
+      <div class="acts"><button class="btn" data-act="bp-fc-connect" ${busy ? 'disabled' : ''}>Ask for access</button></div>${cloud}</div></section>`;
+
+  // Logs: pick a file, search it, keep following it
+  const log = bp.log;
+  const logs = `<section class="card flush"><div class="loghead"><h2>Logs</h2>
+      ${d.logs.length ? `<div class="right logtools"><select class="in sm" data-bplog aria-label="Log file">${d.logs.map((l) => `<option value="${esc(l.name)}" ${l.name === log.name ? 'selected' : ''}>${esc(l.name)} · ${size(l.size)}</option>`).join('')}</select>
+      <input class="in sm" data-bind="bp.log.q" value="${esc(log.q)}" placeholder="Search" aria-label="Search the log">
+      <label class="tog small"><input type="checkbox" data-check="bp.log.errors" ${log.errors ? 'checked' : ''}>Errors only</label>
+      <label class="tog small"><input type="checkbox" data-check="bp.log.follow" ${log.follow ? 'checked' : ''}>Follow</label>
+      <span class="lead small" id="bp-log-count"></span></div>` : ''}</div>
+    ${d.logs.length ? '<pre class="log" id="bp-log"></pre>' : '<p class="lead small" style="padding:0 16px 16px">This bench has written no logs yet.</p>'}</section>`;
+
+  const footer = `${back}<div class="right">${run === true ? `<button class="btn stop" data-act="bp-power" data-arg="stop" ${busy ? 'disabled' : ''}>${icon('stop', 18)}Stop</button>`
+    : run === false ? `<button class="btn tonal" data-act="bp-power" data-arg="start" ${busy ? 'disabled' : ''}>${icon('play_arrow', 18)}Start</button>` : ''}
+    <button class="btn" data-act="bp-refresh" ${busy ? 'disabled' : ''}>${icon('refresh', 18)}Refresh</button></div>`;
+  return [head + sites + apps + backups + logs, footer];
+}
+
+const BENCH_ACTIONS = {
+  'bench-open': (arg) => openBench(arg),
+  'bench-back': async () => {
+    const id = S.run && S.run.run_id;
+    const folder = S.run.summary.folder;
+    detachRun();
+    try { await api('POST', '/api/run/dismiss', { run: id }); } catch (err) { /* a running run stays */ }
+    refreshRuns(); openBench(folder);
+  },
+  'bp-refresh': () => { S.bp.note = ''; loadBenchPage(); },
+  'bp-power': async (what) => {
+    S.bp.busy = what; S.bp.msg = ''; S.bp.note = `${what === 'start' ? 'Starting' : 'Stopping'} the bench…`; render();
+    try {
+      const res = await api('POST', '/api/bench/' + what, { folder: S.bp.folder });
+      S.bp.note = what === 'stop' ? 'The bench stopped.' : `The bench is running, web on port ${res.port}. It keeps running after you close the wizard; its output is in ${tilde(res.log)}.`;
+    } catch (err) { S.bp.note = ''; S.bp.msg = err.message; }
+    loadBenchPage();
+  },
+  'bp-login': async (site) => {
+    const tab = window.open('', '_blank');  // opened now, while the click still counts, or a pop-up blocker stops it
+    S.bp.busy = 'login'; S.bp.msg = ''; render();
+    try {
+      const res = await api('POST', '/api/site/login', { folder: S.bp.folder, site });
+      if (tab) { tab.opener = null; tab.location = res.url; } else window.location.assign(res.url);
+    } catch (err) { if (tab) tab.close(); S.bp.msg = `${site}: ${err.message}`; }
+    S.bp.busy = ''; render();
+  },
+  'bp-backup': (site) => benchRun({ op: 'backup', sites: site ? [site] : undefined }),
+  'bp-migrate': () => benchRun({ migrate: true, sites: S.bp.d.sites, backup: S.bp.migBackup }),
+  'bp-config': async (site) => {
+    try { S.bp.cfg = { site, text: (await api('GET', `/api/site/config?folder=${encodeURIComponent(S.bp.folder)}&site=${encodeURIComponent(site)}`)).text, msg: '' }; S.bp.drop = null; }
+    catch (err) { S.bp.msg = err.message; }
+    render();
+  },
+  'bp-config-save': async () => {
+    const cfg = S.bp.cfg;
+    try { await api('POST', '/api/site/config', { folder: S.bp.folder, site: cfg.site, text: cfg.text }); S.bp.cfg = null; S.bp.note = `Saved site_config.json of ${cfg.site}.`; }
+    catch (err) { cfg.msg = err.message; }
+    render();
+  },
+  'bp-config-close': () => { S.bp.cfg = null; render(); },
+  'bp-drop': (site) => { S.bp.drop = { site, pw: S.rootPw || '' }; S.bp.cfg = null; render(); },
+  'bp-drop-close': () => { S.bp.drop = null; render(); },
+  'bp-drop-go': () => benchRun({ op: 'drop', site: S.bp.drop.site, root_password: S.bp.drop.pw }),
+  'bp-uninstall': (arg) => {
+    const [site, app] = arg.split('|');
+    benchRun({ op: 'uninstall', site, app }, `Uninstall ${app} from ${site}? Its doctypes and their data are deleted from this site; bench backs the site up first. The app stays in the bench.`);
+  },
+  'bp-check': async () => {
+    S.bp.busy = 'check'; render();
+    try { S.bp.d.apps = (await api('POST', '/api/bench/updates', { folder: S.bp.folder })).apps; S.bp.checked = true; } catch (err) { S.bp.msg = err.message; }
+    S.bp.busy = ''; render();
+  },
+  'bp-update': (app) => benchRun({ op: 'update-app', app }, `Pull ${app}'s new commits, then set up requirements, migrate every site of this bench and build ${app}?`),
+  'bp-branches': async (app) => {
+    S.bp.busy = 'branches'; render();
+    try { const list = (await api('POST', '/api/bench/branches', { folder: S.bp.folder, app })).branches; S.bp.branches[app] = list; S.bp.pick[app] = list[0]; }
+    catch (err) { S.bp.msg = `${app}: ${err.message}`; }
+    S.bp.busy = ''; render();
+  },
+  'bp-switch': (app) => {
+    const branch = S.bp.pick[app];
+    const current = S.bp.d.apps.find((a) => a.name === app).branch;
+    if (branch === current) { S.bp.msg = `${app} is on ${branch} already; use Check for updates to pull new commits.`; return render(); }
+    benchRun({ op: 'update-app', app, branch }, `Move ${app} from ${current} to ${branch}, then set up requirements, migrate every site of this bench and build ${app}? Moving to another major version changes every site's data; back the sites up first.`);
+  },
+  'bp-restore': (i) => restoreAsNewSite(Number(i)),
+  'bp-fc-connect': async () => {
+    const domain = S.bp.fcDomain.trim().toLowerCase();
+    S.bp.busy = 'fc'; S.bp.msg = ''; render();
+    try { const res = await api('POST', '/api/cloud/connect', { domain, url: S.bp.fcUrl.trim() }); S.bp.fc[res.domain] = res; if (!S.bp.d.cloud.includes(res.domain)) S.bp.d.cloud.push(res.domain); S.bp.fcDomain = ''; }
+    catch (err) { S.bp.msg = err.message; }
+    S.bp.busy = ''; render();
+  },
+  'bp-fc-check': (domain) => cloudCheck(domain),
+  'bp-fc-take': async (domain) => {
+    try { await api('POST', '/api/cloud/backup', { domain }); S.bp.note = `Frappe Cloud is taking a backup of ${domain}. Refresh in a few minutes to see it.`; }
+    catch (err) { S.bp.msg = err.message; }
+    cloudCheck(domain);
+  },
+  'bp-fc-download': (arg) => { const [domain, backup] = arg.split('|'); benchRun({ op: 'fc-download', domain, backup }); },
+  'bp-fc-remove': async (domain) => {
+    try { await api('POST', '/api/cloud/disconnect', { domain }); } catch (err) { /* forgotten either way */ }
+    S.bp.d.cloud = S.bp.d.cloud.filter((x) => x !== domain); delete S.bp.fc[domain]; render();
+  },
+};
+
+const VIEWS = { project: viewProject, check: viewCheck, apps: viewApps, review: viewReview, run: viewRun, done: viewDone, projects: viewProjects, bench: viewBench };
 
 // ---------------------------------------------------------------- actions
 function validateProject() {
@@ -925,7 +1295,7 @@ async function buildPlan() {
   S.planning = true; S.plan = null; S.planMsg = ''; S.runMsg = ''; render();
   const apps = selectedApps().filter(([n]) => n !== 'frappe')
     .map(([name, a]) => ({ name, repo: a.repo, branch: a.branch, title: a.title }));
-  const body = isMigrate() ? { migrate: true, folder: S.bench.folder, sites: migrateList() }
+  const body = isMigrate() ? { migrate: true, folder: S.bench.folder, sites: migrateList(), backup: S.migrateBackup }
     : isExisting() && S.benchNew ? {
     existing: true, folder: S.bench.folder, site: S.site.trim(), db_name: S.db.trim(), admin_password: S.pw,
     mariadb_root_password: S.rootPw, apps, restore: S.restore,
@@ -947,6 +1317,14 @@ async function startRun() {
 }
 
 // The wizard's answers go back to a fresh start, so the next setup can be planned while this one runs.
+function startOver() {
+  if (!confirm('Clear every choice made so far and go back to the Project step? Nothing on disk changes.')) return;
+  const keep = Object.fromEntries(KEEP.map((k) => [k, S[k]]));
+  Object.assign(S, JSON.parse(FRESH), keep, { version: S.catalog.default_version });
+  applyPreset(S.catalog.default_preset);
+  go('project');
+}
+
 function resetWizard() {
   Object.assign(S, { plan: null, reached: 0, folderEdited: false, siteEdited: false, appsKey: '', showPw: false, bench: null, benchSite: '', benchNew: false, benchMigrate: false, wizStep: '' });
   applyPreset(S.preset);
@@ -1003,7 +1381,7 @@ function onEvent(ev) {
     }
   } else if (ev.type === 'step') {
     const step = S.run.steps.find((s) => s.id === ev.id);
-    step.state = ev.state; step.duration = ev.duration;
+    step.state = ev.state; step.duration = ev.duration; step.diagnosis = ev.diagnosis;
     if (ev.state === 'running') { S.logs[ev.id] = []; if (S.follow) S.activeStep = ev.id; }
     if (ev.state === 'failed') { S.run.failed = ev.id; S.activeStep = ev.id; }
     if (S.step === 'run') render();
@@ -1028,6 +1406,7 @@ function go(step) {
   if (step === 'review') buildPlan();
   if (step === 'apps') { pollExtension(); loadMarket(); }
   if (step === 'projects') loadProjects();
+  if (step === 'bench') loadBenchPage();
 }
 
 const NEXT = { project: 'check', check: 'apps', apps: 'review' };
@@ -1079,9 +1458,9 @@ const ACTIONS = {
     try { await api('POST', '/api/run/dismiss', { run: id }); } catch (err) { /* a running run stays */ }
     resetWizard(); S.step = 'project'; render(); refreshRuns();
   },
-  'open-run': (arg) => { if (!S.run && S.step !== 'projects') S.wizStep = S.step; attachRun(arg); },
+  'open-run': (arg) => { if (!S.run && S.step !== 'projects' && S.step !== 'bench') S.wizStep = S.step; attachRun(arg); },
   projects: () => {
-    if (S.run) detachRun(); else if (S.step !== 'projects') S.wizStep = S.step;
+    if (S.run) detachRun(); else if (S.step !== 'projects' && S.step !== 'bench') S.wizStep = S.step;
     go('projects');
   },
   'proj-migrate': (arg) => {
@@ -1090,6 +1469,21 @@ const ACTIONS = {
   },
   'proj-build': (arg) => startQuick({ build: true, folder: arg }, arg),
   'proj-filter': (arg) => { S.projFilter = arg; render(); },
+  'fx-open': () => browseTo(S.addFolder.trim()),
+  'fx-go': (arg) => browseTo(arg),
+  'fx-close': () => { S.fx = null; render(); },
+  'fx-add': async (arg) => {
+    try {
+      const res = await api('POST', '/api/projects/add', { folder: arg });
+      S.fx = null;
+      S.projNote = res.kind === 'bench' ? `Added the bench ${tilde(res.folder)}.` : `Benches in ${tilde(res.folder)} are listed from now on.`;
+      loadProjects();
+    } catch (err) { S.fx.msg = err.message; render(); }
+  },
+  'proj-remove': async (arg) => {
+    try { await api('POST', '/api/projects/remove', { folder: arg }); loadProjects(); }
+    catch (err) { S.projMsg = err.message; render(); }
+  },
   'proj-start': (arg) => benchPower(arg, 'start'),
   'proj-stop': (arg) => benchPower(arg, 'stop'),
   'ports-auto': async () => {
@@ -1103,11 +1497,14 @@ const ACTIONS = {
   },
   'ports-apply': applyPorts,
   'proj-add': async () => {
+    if (!S.addFolder.trim()) { S.errors = { addFolder: 'Enter a folder, or pick one with Browse…' }; return render(); }
+    S.errors = {};
     try { await api('POST', '/api/projects/add', { folder: S.addFolder.trim() }); S.addFolder = ''; loadProjects(); }
-    catch (err) { S.projMsg = err.message; render(); }
+    catch (err) { S.errors = { addFolder: err.message[0].toUpperCase() + err.message.slice(1) }; render(); }
   },
   'mp-lookup': lookupMarket,
   'mp-add': () => { S.custom = { repo: S.mp.repo, branch: S.mpBranch }; addCustom(); },
+  'start-over': startOver,
   'new-setup': () => { detachRun(); go(S.wizStep || 'project'); S.wizStep = ''; },
   'dismiss-run': async (arg) => {
     try { await api('POST', '/api/run/dismiss', { run: arg }); } catch (err) { return window.alert(err.message); }
@@ -1126,6 +1523,8 @@ const ACTIONS = {
     navigator.clipboard.writeText(text).then(() => { const old = el.textContent; el.textContent = 'Copied'; setTimeout(() => { el.textContent = old; }, 1200); });
   },
 };
+
+Object.assign(ACTIONS, BENCH_ACTIONS);
 
 document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-act]');
@@ -1146,6 +1545,7 @@ document.addEventListener('input', (ev) => {
       $('root-note').innerHTML = '';
       document.querySelector('[data-act=next]').disabled = true;
     }
+    if (el.dataset.bind === 'bp.log.q') paintBenchLog();
     const live = $('live');
     if (live) live.innerHTML = liveSummary();
   } else if (el.dataset.port) {
@@ -1168,7 +1568,12 @@ document.addEventListener('change', (ev) => {
   if (el.dataset.app) toggleApp(el.dataset.app, el.checked);
   else if (el.dataset.projsite) S.projSite[el.dataset.projsite] = el.value;
   else if (el.dataset.msite) { S.migrateSites[el.dataset.msite] = el.checked; render(); }
-  else if (el.dataset.check) { setPath(el.dataset.check, el.checked); if (el.dataset.check === 'follow' && el.checked) paintLog(); }
+  else if (el.dataset.bplog !== undefined) openLog(el.value);
+  else if (el.dataset.check) {
+    setPath(el.dataset.check, el.checked);
+    if (el.dataset.check === 'follow' && el.checked) paintLog();
+    if (el.dataset.check.startsWith('bp.log')) paintBenchLog();
+  }
   else if (el.dataset.bind === 'restore.sql') inspectBackup();
 });
 
@@ -1179,6 +1584,7 @@ document.addEventListener('keydown', (ev) => {
   if (ev.target.dataset.bind.startsWith('custom.')) addCustom();
   if (ev.target.dataset.bind === 'mpQuery') lookupMarket();
   if (ev.target.dataset.bind === 'addFolder') ACTIONS['proj-add']();
+  if (ev.target.dataset.bind === 'bp.fcDomain' || ev.target.dataset.bind === 'bp.fcUrl') ACTIONS['bp-fc-connect']();
 });
 
 async function boot() {
@@ -1210,8 +1616,8 @@ function runLabel(s) {
 // Painted on its own, so polling never re-renders (and so never disturbs) the form being filled in.
 function paintRuns() {
   const el = $('runs');
-  const away = S.run || S.step === 'projects';
-  el.innerHTML = `<div class="rrow ${S.step === 'projects' ? 'current' : ''}"><button class="rbtn" data-act="projects">
+  const away = S.run || S.step === 'projects' || S.step === 'bench';
+  el.innerHTML = `<div class="rrow ${S.step === 'projects' || S.step === 'bench' ? 'current' : ''}"><button class="rbtn" data-act="projects">
       <span class="ic waiting">${icon('apps', 18)}</span><span class="t"><span>Projects</span><small>All benches, sites and ports</small></span></button></div>`
     + `<div class="rhead"><span>${S.runs.length ? 'Runs' : ''}</span>${away ? `<button class="btn sm" data-act="new-setup">${icon('add', 18)}New setup</button>` : ''}</div>`
     + S.runs.map((r) => `<div class="rrow ${S.run && S.run.run_id === r.run_id ? 'current' : ''}">
