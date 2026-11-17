@@ -35,6 +35,20 @@ def nvm_default_node(home=None):
     return match.group(1) if match else ""
 
 
+def version_title(version):
+    return f"Version {version.split('-')[-1]}" if version else "Unknown version"
+
+
+def own_profile(folder, version):
+    """A version profile for a bench on a Frappe version the catalog does not list, read from the bench itself.
+
+    `existing_only`: the wizard can work in such a bench but does not set up new ones on that version.
+    """
+    venv = re.search(r"(?m)^version(?:_info)?\s*=\s*(\d+\.\d+)", _read(os.path.join(folder, "env", "pyvenv.cfg")) or "")
+    return {"title": version_title(version), "python": venv.group(1) if venv else "3",
+            "node": nvmrc_node(folder) or nvm_default_node(), "existing_only": True}
+
+
 def nvmrc_node(folder):
     """Node major from the bench's .nvmrc, "" when it has none."""
     match = re.match(r"v?(\d+)", (_read(os.path.join(folder, ".nvmrc")) or "").strip())
@@ -64,10 +78,6 @@ def inspect(folder, catalog, env):
         raise BenchError(f"{folder} is not a bench: apps/frappe or sites is missing")
     match = re.search(r"""__version__\s*=\s*["'](\d+)\.""", text)
     version = f"version-{match.group(1)}" if match else ""
-    if version not in catalog["frappe_versions"]:
-        found = f"Frappe {match.group(1)}" if match else "an unknown Frappe version"
-        supported = ", ".join(v["title"] for v in catalog["frappe_versions"].values())
-        raise BenchError(f"this bench runs {found}; the wizard supports {supported}")
     apps = (_read(os.path.join(folder, "sites", "apps.txt")) or "").split()
     sites_dir = os.path.join(folder, "sites")
     names = sorted(d for d in os.listdir(sites_dir) if os.path.isfile(os.path.join(sites_dir, d, "site_config.json")))

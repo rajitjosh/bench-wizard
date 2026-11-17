@@ -258,7 +258,7 @@ function restoreFields() {
 function viewProject() {
   if (S.mode === 'existing') return viewExisting();
   const c = S.catalog;
-  const versions = Object.entries(c.frappe_versions).map(([id, v]) => radio('version', id, id === S.version,
+  const versions = Object.entries(c.frappe_versions).filter(([, v]) => !v.existing_only).map(([id, v]) => radio('version', id, id === S.version,
     esc(v.title) + (v.default ? ' <span class="badge blue">Default</span>' : ''),
     `Python ${v.python} · Node ${v.node} · branch ${id}`)).join('');
   const presets = Object.entries(c.presets).map(([id, p]) => {
@@ -847,6 +847,7 @@ async function loadBench() {
   try {
     S.bench = await api('POST', '/api/bench/inspect', { folder });
     S.version = S.bench.version;
+    S.catalog.frappe_versions[S.version] = S.bench.profile;  // a version the catalog lacks: read from the bench
     const readable = Object.keys(S.bench.sites).filter((n) => S.bench.sites[n].apps);
     S.benchSite = readable.length === 1 ? readable[0] : '';
     S.benchNew = false; S.benchMigrate = false;

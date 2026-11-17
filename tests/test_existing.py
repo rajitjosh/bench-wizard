@@ -45,10 +45,13 @@ class InspectBenchTest(unittest.TestCase):
         with self.assertRaises(existing.BenchError):
             existing.inspect(str(self.root), CATALOG, self.env)
 
-    def test_unsupported_frappe_version(self):
+    def test_any_frappe_version_is_read_and_described_from_the_bench(self):
         (self.bench / "apps/frappe/frappe/__init__.py").write_text('__version__ = "14.2.0"\n')
-        with self.assertRaisesRegex(existing.BenchError, "Frappe 14"):
-            existing.inspect(str(self.bench), CATALOG, self.env)
+        self.assertEqual(existing.inspect(str(self.bench), CATALOG, self.env).version, "version-14")
+        (self.bench / "env").mkdir(exist_ok=True)
+        (self.bench / "env/pyvenv.cfg").write_text("home = /usr/bin\nversion_info = 3.10.12.final.0\n")
+        profile = existing.own_profile(str(self.bench), "version-14")
+        self.assertEqual((profile["title"], profile["python"], profile["existing_only"]), ("Version 14", "3.10", True))
 
 
 class NvmDefaultTest(unittest.TestCase):

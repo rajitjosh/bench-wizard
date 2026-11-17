@@ -69,6 +69,17 @@ class App:
         self.runs = {}  # run id -> {"id", "runner", "summary"}, oldest first
         self.run_id = None  # the run started last: the one a request that names none is about
 
+    def _learn(self, folder, version):
+        """The bench's version profile; one the catalog does not list (13, 14, a newer one) is read from the bench
+        and kept, so every step after this (apps, checks, plans) can work in it."""
+        profile = self.catalog["frappe_versions"].get(version)
+        if profile is None or profile.get("existing_only"):
+            profile = self.catalog["frappe_versions"][version] = existing_mod.own_profile(folder, version)
+        return profile
+
+    def _supported(self):
+        return ", ".join(v["title"] for v in self.catalog["frappe_versions"].values() if not v.get("existing_only"))
+
     def _profile(self, version):
         profile = self.catalog["frappe_versions"].get(version)
         if profile is None:
@@ -150,14 +161,16 @@ class App:
 
     def _read_bench(self, folder):
         try:
-            return self.inspect_bench_fn(folder, self.catalog, self.checks.build_env(""))
+            bench = self.inspect_bench_fn(folder, self.catalog, self.checks.build_env(""))
         except existing_mod.BenchError as exc:
             raise ApiError(400, str(exc))
+        self._learn(bench.folder, bench.version)
+        return bench
 
     def post_inspect_bench(self, query, body):
         info = self._read_bench(body.get("folder", ""))
         return {"folder": info.folder, "version": info.version, "node": info.node, "apps": info.apps,
-                "sites": info.sites}
+                "sites": info.sites, "profile": self._profile(info.version)}
 
     # -- Frappe Cloud extension ----------------------------------------
     # hello and send come from the extension, not the page: they need no token but must carry an extension
@@ -203,6 +216,9 @@ class App:
             return self._plan_existing(body)
         version = body.get("version", "")
         profile = self._profile(version)
+        if profile.get("existing_only"):
+            raise ApiError(400, f"new benches are set up on {self._supported()} only; a bench on {profile['title']} "
+                                "can be used as an existing bench")
         folder = body.get("folder", "")
         if folder:
             folder = os.path.abspath(os.path.expanduser(folder))
@@ -354,7 +370,8 @@ class App:
         if not projects.is_bench(folder):
             raise ApiError(400, f"{folder} is not a bench: apps/frappe or sites is missing")
         info = projects.bench_info(folder)
-        node = existing_mod.nvmrc_node(folder) or existing_mod.nvm_default_node() or self._profile(info["version"])["node"]
+        profile = self._learn(folder, info["version"])
+        node = existing_mod.nvmrc_node(folder) or existing_mod.nvm_default_node() or profile["node"]
         return info, node
 
     def _plan_build(self, body):
@@ -415,7 +432,7 @@ class App:
         shared = projects.clashes({b["folder"]: b["ports"] for b in benches})
         for bench in benches:
             profile = self.catalog["frappe_versions"].get(bench["version"])
-            bench.update(version_title=profile["title"] if profile else "unsupported", clashes=shared[bench["folder"]],
+            bench.update(version_title=(profile or {}).get("title") or existing_mod.version_title(bench["version"]), clashes=shared[bench["folder"]],
                          running=None if used is None else bench["folder"] in used,
                          rss=(used or {}).get(bench["folder"], {}).get("rss"))
         return {"benches": benches, "resources": self.resources(self.home),

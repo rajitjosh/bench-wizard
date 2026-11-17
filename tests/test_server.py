@@ -529,6 +529,32 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/plan", {"folder": b, "ports": bad})[0], 400)
         self.assertEqual(self.request("POST", "/api/plan", {"folder": str(self.tmp), "ports": moves[b]})[0], 400)
 
+    def test_bench_on_an_older_frappe_can_still_move_ports_build_and_start(self):
+        from bench_wizard import projects
+        from tests.test_projects import make_bench
+        old = make_bench(self.tmp / "home" / "old" / "frappe-bench", projects.slot(0), version="14.2.0")
+        (Path(old) / "env").mkdir()
+        (Path(old) / "env" / "pyvenv.cfg").write_text("home = /usr/bin\nversion = 3.10.12\n")
+        status, plan = self.request("POST", "/api/plan", {"folder": old, "ports": projects.slot(3)})
+        self.assertEqual((status, plan["version_title"], plan["python"]), (200, "Version 14", "3.10"))
+        self.assertEqual(self.request("POST", "/api/plan", {"folder": old, "build": True})[0], 200)
+        self.app.start_bench = lambda f, env: None
+        self.assertEqual(self.request("POST", "/api/bench/start", {"folder": old})[0], 200)
+        projects_list = self.request("GET", "/api/projects")[1]["benches"]
+        self.assertEqual([b["version_title"] for b in projects_list], ["Version 14"])
+
+    def test_bench_on_any_frappe_version_loads_and_migrates_but_no_new_bench_on_it(self):
+        bench = BenchInfo(str(self.tmp / "b"), "version-13", "14", ["frappe"], {"a.localhost": {"apps": ["frappe"]}})
+        self.app.inspect_bench_fn = lambda folder, cat, env: bench
+        status, res = self.request("POST", "/api/bench/inspect", {"folder": "~/b"})
+        self.assertEqual((status, res["profile"]["title"], res["profile"]["existing_only"]), (200, "Version 13", True))
+        status, plan = self.request("POST", "/api/plan", {"migrate": True, "folder": "~/b", "sites": ["a.localhost"]})
+        self.assertEqual((status, plan["version_title"], plan["node"]), (200, "Version 13", "14"))
+        self.assertEqual(self.request("GET", "/api/checks?version=version-13")[0], 200)
+        status, res = self.request("POST", "/api/plan", dict(self.answers(), version="version-13"))
+        self.assertEqual(status, 400)
+        self.assertIn("Version 15, Version 16 only", res["error"])
+
     def test_build_plan(self):
         a, _ = self.two_clashing_benches()
         status, plan = self.request("POST", "/api/plan", {"folder": a, "build": True})
