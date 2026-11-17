@@ -228,8 +228,7 @@ wizard steps.
 
 When a migrate fails, the run screen says **why**: the patch it was in (the last `Executing … in` line), the kind
 of failure, with what it usually means, and the error line itself. It recognises a missing column, a missing table,
-duplicate rows, a value too long for its column, and text where a number belongs. The approach comes from Frappe's
-[Pilot](https://github.com/frappe/pilot).
+duplicate rows, a value too long for its column, and text where a number belongs.
 
 ## Projects: every bench on this machine
 
@@ -306,7 +305,7 @@ Each site shows the apps installed on it. On each site:
 
 | Button | What it does |
 |---|---|
-| **Open as Administrator** | Opens the site's desk in a new tab, already signed in, using Frappe's own login. The bench must be running, since sign-ins are kept in its Redis. The site's name must open in a browser: names ending in `.localhost` always do; any other needs a line in `/etc/hosts`. |
+| **Open as Administrator** | Opens the site's desk in a new tab, already signed in, using Frappe's own login. A stopped bench is started first, since the sign-in is kept in its Redis and its web server serves the desk; the tab waits, up to a minute, until both answer. The site's name must open in a browser: names ending in `.localhost` always do; any other needs a line in `/etc/hosts`. |
 | **Back up** | `bench --site … backup --with-files`. **Back up all** does every site, side by side. |
 | **Config** | Edits the site's `site_config.json`. Passwords and keys show as `********` and keep their value unless you type a new one; the file must stay valid JSON and keep its `db_name`. |
 | **Drop** | `bench drop-site`, after asking for the MariaDB root password. bench backs the site up first and moves its folder to `archived_sites`. |
@@ -340,8 +339,8 @@ the code matches. **Check again** then lists the site's backups; **Download into
 Frappe Cloud for a fresh one, and **Remove** withdraws the access.
 
 - Nothing is configured in the wizard: no API key or Frappe Cloud login. The approval is the permission.
-- It uses Frappe Cloud's migration API, the way Frappe's [Pilot](https://github.com/frappe/pilot) does, which
-  serves a site's offsite backups. Sites from several teams can be listed at once, each with its own access.
+- It uses Frappe Cloud's migration API, which serves a site's offsite backups. Sites from several teams can be
+  listed at once, each with its own access.
 - **Frappe Cloud address** is `https://cloud.frappe.io` for everyone, except an organisation that runs its own
   Frappe Cloud (Press); each site keeps the address it was added with.
 - The access token is kept in `~/.local/state/bench-wizard/frappe-cloud.json`, readable only by you. The download
@@ -514,7 +513,7 @@ folders in your home, and runs without the DevTools pipe, so reopening there ope
 | A step failed during Run | Open the step's log, fix the cause, then **Retry step N**. `pip`/`yarn` cache clashes usually pass on retry. |
 | The extension card never shows *connected* | Start the wizard without `--port`, reload the extension, and make sure ports 47615–47619 are not all taken. |
 | "new benches are set up on Version 15, Version 16 only" | A bench of another version can be used as an existing bench, but the wizard sets up new benches only on the catalog's versions. |
-| **Open as Administrator** is greyed out | The bench is not running; press **Start** at the bottom of its page. |
+| **Open as Administrator** says the bench "may need longer" | The bench was started but its Redis did not take the sign-in within a minute. Wait a moment and click it again; the bench's `logs/bench-start.log` shows what it is doing. |
 | "… does not resolve on this machine" | The site's name does not open in a browser. Add `127.0.0.1 <site>` to `/etc/hosts`, or use a site name ending in `.localhost`. |
 | A Frappe Cloud site stays *Pending* | The request has not been approved yet. Someone on the site's team must open the approval link while signed in to Frappe Cloud. |
 | A migrate failed with *Missing column* or *Duplicate rows* | The note under the run names the patch. Fix the data or run the patch it depends on, then **Retry failed**. |

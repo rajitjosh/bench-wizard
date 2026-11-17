@@ -694,7 +694,7 @@ function viewReview() {
 
 const ICON = { done: icon('check', 16), failed: icon('priority_high', 16), running: '<span class="spin"></span>' };
 
-// Why a migrate failed, after Pilot's diagnosis: the patch it was in and what such an error usually means.
+// Why a migrate failed: the patch it was in and what such an error usually means.
 const diagnosis = (steps) => steps.filter((s) => s.state === 'failed' && s.diagnosis).map((s) => {
   const d = s.diagnosis;
   return `<div class="note bad diag">${INFO}<div><strong>${esc(s.title)}${d.kind ? ': ' + esc(d.kind) : ' failed'}</strong>${d.patch ? ` in the patch <span class="mono">${esc(d.patch)}</span>` : ''}.
@@ -950,7 +950,7 @@ function viewBench() {
         <div class="acts"><button class="btn sm danger" data-act="bp-drop-go" ${busy ? 'disabled' : ''}>Drop site</button><button class="btn sm" data-act="bp-drop-close">Cancel</button></div></div></td></tr>`;
     }
     return `<tr><td class="mono">${esc(site)}</td><td>${apps}</td>
-      <td class="acts"><button class="btn sm tonal" data-act="bp-login" data-arg="${esc(site)}" ${busy || run === false ? 'disabled' : ''} title="${run === false ? 'Start the bench first' : 'Open the desk signed in as Administrator'}">${icon('arrow_forward', 18)}Open as Administrator</button>
+      <td class="acts"><button class="btn sm tonal" data-act="bp-login" data-arg="${esc(site)}" ${busy ? 'disabled' : ''} title="${run === false ? 'Starts the bench, then opens the desk signed in as Administrator' : 'Open the desk signed in as Administrator'}">${icon('arrow_forward', 18)}Open as Administrator</button>
         <button class="btn sm" data-act="bp-backup" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('storage', 18)}Back up</button>
         <button class="btn sm" data-act="bp-config" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('build', 18)}Config</button>
         <button class="btn sm danger" data-act="bp-drop" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('close', 18)}Drop</button></td></tr>${extra}`;
@@ -1048,13 +1048,21 @@ const BENCH_ACTIONS = {
     loadBenchPage();
   },
   'bp-login': async (site) => {
+    // A stopped bench is started first: the sign-in lives in its Redis and its web server serves the desk.
+    const starting = S.bp.d.running === false;
+    const wait = starting ? 'Starting the bench and signing in…' : 'Signing in…';
     const tab = window.open('', '_blank');  // opened now, while the click still counts, or a pop-up blocker stops it
-    S.bp.busy = 'login'; S.bp.msg = ''; render();
+    try { tab.document.title = wait; tab.document.body.textContent = wait; tab.document.body.style.font = '16px system-ui, sans-serif'; } catch (e) { /* no tab: fine */ }
+    S.bp.busy = 'login'; S.bp.msg = ''; S.bp.note = starting ? `Starting the bench, then signing in to ${site}. This can take up to a minute.` : ''; render();
+    let started = false;
     try {
       const res = await api('POST', '/api/site/login', { folder: S.bp.folder, site });
+      started = res.started;
+      S.bp.note = started ? `The bench is running now, web on port ${S.bp.d.ports.webserver_port}; ${site} opened signed in as Administrator.` : '';
       if (tab) { tab.opener = null; tab.location = res.url; } else window.location.assign(res.url);
-    } catch (err) { if (tab) tab.close(); S.bp.msg = `${site}: ${err.message}`; }
-    S.bp.busy = ''; render();
+    } catch (err) { if (tab) tab.close(); S.bp.note = ''; S.bp.msg = `${site}: ${err.message}`; }
+    S.bp.busy = '';
+    if (started) loadBenchPage(); else render();
   },
   'bp-backup': (site) => benchRun({ op: 'backup', sites: site ? [site] : undefined }),
   'bp-migrate': () => benchRun({ migrate: true, sites: S.bp.d.sites, backup: S.bp.migBackup }),

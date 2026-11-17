@@ -621,13 +621,36 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(json.loads(c["text"]), {"db_name": "x", "db_password": "********"})
         self.assertEqual(self.request("POST", "/api/site/config", {"folder": folder, "site": "a.localhost", "text": "{"})[0], 400)
         self.assertEqual(self.request("GET", f"/api/site/config?folder={folder}&site=zz")[0], 400)
-        from bench_wizard import projects
-        real = projects.usage
-        projects.usage = lambda folders: {}
-        self.addCleanup(setattr, projects, "usage", real)
-        status, res = self.request("POST", "/api/site/login", {"folder": folder, "site": "a.localhost"})
-        self.assertEqual(status, 409)
-        self.assertIn("start the bench", res["error"])
+
+    def test_open_as_administrator_starts_a_stopped_bench_and_waits_for_it(self):
+        from unittest import mock
+        from bench_wizard import projects, sites
+        from tests.test_projects import make_bench
+        folder = make_bench(self.tmp / "home" / "b")
+        running, tries, waits = {}, [], []
+        self.app.start_bench = lambda f, env: running.setdefault(f, True) and None
+        self.app.port_free = lambda port: not running or len(waits) < 2  # the web port answers a moment later
+
+        def login_url(f, site, port, env=None):
+            tries.append(site)
+            if len(tries) < 3:
+                raise sites.SiteError("could not sign in: redis.ConnectionError")  # Redis still starting
+            return f"http://{site}:{port}/app?sid=x"
+        with mock.patch.object(projects, "usage", lambda folders: {f: {} for f in folders if f in running}), \
+                mock.patch.object(sites, "login_url", login_url), \
+                mock.patch("bench_wizard.server.time.sleep", waits.append):
+            status, res = self.request("POST", "/api/site/login", {"folder": folder, "site": "a.localhost"})
+            self.assertEqual((status, res["started"], res["url"]), (200, True, "http://a.localhost:8000/app?sid=x"))
+            self.assertEqual((list(running), len(tries)), ([folder], 3))
+            status, res = self.request("POST", "/api/site/login", {"folder": folder, "site": "a.localhost"})
+            self.assertEqual((status, res["started"]), (200, False))  # running now: signed in at once
+        (Path(folder) / "sites" / "x.invalid").mkdir()
+        (Path(folder) / "sites" / "x.invalid" / "site_config.json").write_text("{}")
+        running.clear()
+        status, res = self.request("POST", "/api/site/login", {"folder": folder, "site": "x.invalid"})
+        self.assertEqual(status, 400)
+        self.assertIn("/etc/hosts", res["error"])
+        self.assertEqual(running, {})  # nothing was started for a site no browser can open
 
     def test_frappe_cloud_access_backups_and_download_plan(self):
         from unittest import mock

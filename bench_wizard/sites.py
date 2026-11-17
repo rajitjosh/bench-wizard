@@ -192,13 +192,18 @@ def _resolves(host):
         return False
 
 
+def check_host(site):
+    """Raise SiteError when a browser on this machine cannot open the site by its name."""
+    if not _resolves(site):
+        raise SiteError(f"{site} does not resolve on this machine, so a browser cannot open it. Add "
+                        f"\"127.0.0.1 {site}\" to /etc/hosts, or use a site name that ends in .localhost.")
+
+
 def login_url(folder, site, port, env=None, run=subprocess.run):
     """A URL that opens the site's desk signed in as Administrator. Needs the bench running (sessions live
     in its Redis)."""
     _site_dir(folder, site)
-    if not _resolves(site):
-        raise SiteError(f"{site} does not resolve on this machine, so a browser cannot open it. Add "
-                        f"\"127.0.0.1 {site}\" to /etc/hosts, or use a site name that ends in .localhost.")
+    check_host(site)
     try:
         result = run([os.path.join(folder, "env", "bin", "python"), "-c", LOGIN, site], cwd=os.path.join(folder, "sites"),
                      env=env, capture_output=True, text=True, errors="replace", timeout=60, stdin=subprocess.DEVNULL)
@@ -211,7 +216,7 @@ def login_url(folder, site, port, env=None, run=subprocess.run):
     return f"http://{site}:{port}/app?sid={sid[0]}"
 
 
-# (kind, what it usually means, signatures), most specific first; after Pilot's migration diagnosis.
+# (kind, what it usually means, signatures), most specific first.
 FAILURES = [
     ("Text where a number goes", "a column now meant to hold numbers still has text in some rows; fix those rows, "
      "then migrate again", ("Incorrect integer value", "Incorrect decimal value", "Truncated incorrect")),

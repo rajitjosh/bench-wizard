@@ -1,4 +1,4 @@
-"""A Frappe Cloud site's backups, through Frappe Cloud's migration API, the way Frappe's Pilot reaches them.
+"""A Frappe Cloud site's backups, through Frappe Cloud's migration API.
 
 The wizard asks for access to a site with a code it makes up; the site's owner approves the request on Frappe
 Cloud, where the same code is shown. After that the token lists the site's backups and gives download links.

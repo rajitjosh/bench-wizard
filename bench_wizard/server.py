@@ -574,17 +574,36 @@ class App:
         except sites_mod.SiteError as exc:
             raise ApiError(400, str(exc))
 
+    LOGIN_WAIT = 60  # seconds a bench just started gets to take a sign-in and serve its web port
+
     def post_site_login(self, query, body):
+        """A URL that opens the site signed in as Administrator. A stopped bench is started first, since the
+        sign-in is kept in its Redis and the desk is served by its web server."""
         info, node = self._light_bench(body.get("folder"))
-        site = self._site_of(info, body.get("site"))
-        used = projects.usage([info["folder"]])
-        if used is not None and info["folder"] not in used:  # None: this system cannot tell, so let it try
-            raise ApiError(409, "start the bench first: a sign-in is kept in the bench's Redis")
+        folder, site = info["folder"], self._site_of(info, body.get("site"))
+        port = info["ports"]["webserver_port"]
         try:
-            url = sites_mod.login_url(info["folder"], site, info["ports"]["webserver_port"], self.checks.build_env(node))
+            sites_mod.check_host(site)  # before starting anything: a name no browser can open is no use
         except sites_mod.SiteError as exc:
             raise ApiError(400, str(exc))
-        return {"url": url}
+        used = projects.usage([folder])
+        started = used is not None and folder not in used  # None: this system cannot tell, so just try
+        if started:
+            self.post_bench_start(query, {"folder": folder})  # its port checks and errors apply
+        env = self.checks.build_env(node)
+        deadline = time.monotonic() + (self.LOGIN_WAIT if started else 0)
+        while True:  # a bench just started needs a few seconds before its Redis takes a sign-in
+            try:
+                url = sites_mod.login_url(folder, site, port, env)
+                break
+            except sites_mod.SiteError as exc:
+                if time.monotonic() >= deadline:
+                    raise ApiError(400, str(exc) + ("; the bench was started and may need longer, so try again"
+                                                    if started else ""))
+                time.sleep(2)
+        while started and self.port_free(port) and time.monotonic() < deadline:
+            time.sleep(1)  # and its web server a little longer before the desk answers
+        return {"url": url, "started": started}
 
     def get_site_config(self, query, body):
         info, _ = self._light_bench(query.get("folder"))
