@@ -8,7 +8,9 @@ at once**.
 
 Its **Projects** screen lists every bench on the machine with its sites, ports, memory use and state. From there
 you start and stop benches, run `migrate` or `build`, and give each bench ports of its own so several can run side
-by side. Apps can come from the catalog, any Git URL, or the free apps in the **Frappe Cloud Marketplace**.
+by side. **Manage** opens one bench up close: open a site signed in as Administrator, back sites up and restore them
+as copies, update apps or move them to another branch, read its logs, and download backups from Frappe Cloud. Apps
+can come from the catalog, any Git URL, or the free apps in the **Frappe Cloud Marketplace**.
 
 Python 3.10+ standard library only. No build step, no dependencies.
 
@@ -22,6 +24,7 @@ Python 3.10+ standard library only. No build step, no dependencies.
 - [Using the wizard, step by step](#using-the-wizard-step-by-step)
 - [Adding apps to an existing bench](#adding-apps-to-an-existing-bench) · [Migrating several sites at once](#migrating-several-sites-at-once)
 - [Projects: every bench on this machine](#projects-every-bench-on-this-machine)
+- [One bench up close: sites, apps, backups and logs](#one-bench-up-close-sites-apps-backups-and-logs)
 - [Several runs at once](#several-runs-at-once)
 - [Browser extension: copy apps from a Frappe Cloud site](#browser-extension-copy-apps-from-a-frappe-cloud-site)
 - [Which GitHub account it uses](#which-github-account-it-uses)
@@ -35,12 +38,15 @@ Python 3.10+ standard library only. No build step, no dependencies.
 |---|---|
 | **Onboard a developer** on a fresh Ubuntu or Mac | Installs Python, Node (via nvm), MariaDB, Redis, wkhtmltopdf, Yarn and the Bench CLI, then builds a working bench and site in one run. |
 | **Reproduce a production issue locally** | Restores a `.sql`/`.sql.gz` backup (plus public/private files) as a new site, with switches that mute email, pause the scheduler and hold back webhooks/SMS so the copy cannot reach real customers. |
-| **Mirror a Frappe Cloud site** | The [browser extension](#browser-extension-copy-apps-from-a-frappe-cloud-site) copies the site's apps, repos and branches into the wizard, so your local bench matches what runs in the cloud. |
+| **Mirror a Frappe Cloud site** | The [browser extension](#browser-extension-copy-apps-from-a-frappe-cloud-site) copies the site's apps, repos and branches into the wizard, so your local bench matches what runs in the cloud; [Frappe Cloud backups](#backups-from-frappe-cloud) brings its data down too. |
 | **Try an app** on a bench you already use | [Existing-bench mode](#adding-apps-to-an-existing-bench) fetches only what is missing, installs it on the site you pick and rebuilds assets. |
 | **Standardise team setups** | A shared `catalog.json` (or your own `~/.config/bench-wizard/catalog.json`) gives everyone the same versions, apps and presets. |
 | **Run several projects on one machine** | [Projects](#projects-every-bench-on-this-machine) finds every bench, shows which share ports, and gives each its own web, Socket.IO and Redis ports so they can run at the same time. |
 | **Start, stop and watch benches** | Start or stop any bench from one screen, see the memory each running bench holds, and get a warning when memory or disk runs low. |
-| **Migrate many sites after a pull** | [Migrate sites](#migrating-several-sites-at-once) runs `bench --site … migrate` on the sites you tick, side by side, each with its own log. |
+| **Migrate many sites after a pull** | [Migrate sites](#migrating-several-sites-at-once) backs up and migrates the sites you tick, side by side, each with its own log, and says which patch failed and why. |
+| **Look into a site quickly** | [Open as Administrator](#sites) opens the desk already signed in; the bench's [logs](#logs) are searchable, with errors in red. |
+| **Copy a site for testing** | [Back up](#backups) a site, then **Restore as a new site**: a UAT copy with email muted and the scheduler paused. |
+| **Keep apps up to date** | [Check for updates](#apps) shows how many commits each app is behind; **Update** or **Change branch** pulls, migrates and builds. |
 | **Try a Marketplace app** | Pick a free app from the [Frappe Cloud Marketplace](#3-apps); the wizard finds its repository and the branch for your Frappe version. |
 | **Work with private apps** | Paste a token-carrying HTTPS URL or choose an SSH host alias; the token is kept in memory only and scrubbed from logs. |
 
@@ -111,6 +117,9 @@ For a new bench pick:
 - **Site data.** A new empty site, or **Restore from backup**: a `.sql`/`.sql.gz` path, optional public/private
   file archives, an optional backup encryption key and the source site's `encryption_key`.
 
+Until you press **Start**, **Start over** in the side bar clears every choice and goes back to this step. It asks
+first, and nothing on disk changes.
+
 ### 2. System check
 
 ![System check: every prerequisite with required and found versions](screenshots/2-system-check.png)
@@ -173,7 +182,9 @@ For a restored site it also lists which safety switches were applied.
 Choose **Add apps to an existing bench** on the Project step, type the bench folder (the one holding `apps/`
 and `sites/`) and click **Load bench**. The wizard reads:
 
-- the **Frappe version**, from `apps/frappe/frappe/__init__.py` (it must be a version in the catalog),
+- the **Frappe version**, from `apps/frappe/frappe/__init__.py`. Any version works, 13 and 14 included; for one
+  the catalog does not list, Python comes from the bench's own `env`. (New benches are set up on the catalog's
+  versions only, since the wizard has to know which Python and Node to install.)
 - the **Node version**, from the bench's `.nvmrc`, or your nvm default if there is none,
 - the **apps in the bench**, from `sites/apps.txt`,
 - each **site** and the apps installed on it, via `bench --site <site> list-apps`.
@@ -206,11 +217,19 @@ Node than the bench uses, the wizard writes the bench's `.nvmrc` so `nvm use` pi
 
 ![Three sites of one bench migrating side by side while another bench builds its assets](screenshots/7-migrate-sites.png)
 
-Load a bench on the Project step, choose **Migrate sites** and tick the sites. The Review step shows one
-`bench --site <site> migrate` per site; **Start migrate** runs them all at the same time, each with its own log. The
+Load a bench on the Project step, choose **Migrate sites** and tick the sites. With **Back up each site first** (on
+by default), each site runs `bench --site <site> backup --with-files` and then `migrate`, in the same step, so a
+site's migrate waits for its own backup. **Start migrate** runs the sites at the same time, each with its own log. The
 run starts the bench's own Redis while it works, since migrate queues jobs. If some fail, **Retry failed** runs only those
 again. The Projects screen's **Migrate** button does the same for one site, or all of a bench's sites, without the
 wizard steps.
+
+![A failed migrate: the patch it stopped in, what that kind of error usually means, and the error itself](screenshots/14-migrate-diagnosis.png)
+
+When a migrate fails, the run screen says **why**: the patch it was in (the last `Executing … in` line), the kind
+of failure, with what it usually means, and the error line itself. It recognises a missing column, a missing table,
+duplicate rows, a value too long for its column, and text where a number belongs. The approach comes from Frappe's
+[Pilot](https://github.com/frappe/pilot).
 
 ## Projects: every bench on this machine
 
@@ -218,8 +237,16 @@ wizard steps.
 
 Click **Projects** in the side bar. The wizard looks for benches (a folder with `apps/frappe` and `sites/`) up to
 three folders deep in your home folder, skipping hidden folders and the inside of benches, so the scan takes well
-under a second. Benches elsewhere, or deeper, can be added with **Add a bench**; they, and every bench the wizard
-creates, are remembered in `~/.local/state/bench-wizard/benches.json`.
+under a second.
+
+![Where benches are found: the folders searched, and Browse… open on a folder with two benches in it](screenshots/15-folder-explorer.png)
+
+**Where benches are found**, at the bottom, lists the folders searched. Type a path or click **Browse…** to walk
+the disk in the page: folders that are benches are marked, with an **Add bench** button, and **Search this folder**
+adds the folder you are in, so benches up to three folders below it are listed too (for example `/srv/benches`). A
+bench folder added on its own is listed by itself. The × on a chip takes it off the list; nothing on disk changes.
+Searched folders are kept in `~/.local/state/bench-wizard/folders.json`; benches added by hand, and every bench the
+wizard creates, in `benches.json` next to it.
 
 **This machine** shows free memory and disk, how many benches are running and the memory they hold. A red bar and
 a note appear when less than 2 GB of memory or 10 GB of disk is free; the same note shows on the Review step before
@@ -233,9 +260,12 @@ Each bench row has:
 | **Start** | Runs `bench start` in the bench, in a session of its own, so it keeps running after you close the wizard. Its output goes to the bench's `logs/bench-start.log`. It is refused while one of the bench's ports is in use, and if `bench start` stops within 3 seconds (for example Redis could not bind its port), its last lines are shown. |
 | **Stop** | Stops the bench the way Ctrl+C does: honcho stops every process it started. |
 | **Migrate** / **Build** | Run `bench --site … migrate` or `bench build` right away, as a run you can follow under **Runs**. |
+| **Manage** | Opens the [bench's own page](#one-bench-up-close-sites-apps-backups-and-logs). Clicking the bench's name does the same. |
 | **Ports** | The bench's web, Socket.IO, file watcher, Redis cache and Redis queue ports. Ports shared with another bench are outlined in red. |
 
-The **All / Running** chips above the table show every bench or only the ones running now.
+The **All / Running** chips above the table show every bench or only the ones running now. In a window narrower
+than about 1,640 pixels, Start, Stop, Migrate and Build show only their icons (their names show on hover), so the
+table fits without scrolling sideways.
 
 ![Dark theme with the Running filter: only the benches that are running, with their Stop buttons](screenshots/10-dark-running.png)
 
@@ -261,6 +291,68 @@ highlighted fields (or type your own) and click **Apply port changes**. For each
 
 A bench uses its new ports the next time it starts, so its sites then open on the new web port. New benches made
 by the wizard get a free slot from the start.
+
+## One bench up close: sites, apps, backups and logs
+
+![A bench's page: its sites with their apps and actions, and its apps after Check for updates](screenshots/11-bench-page.png)
+
+**Manage** on the Projects screen opens one bench: its version, web port and Node, whether it is running (with
+**Start** or **Stop** at the bottom), and four sections. Every action that changes something runs like any other run,
+with a live log, **Retry** and **Cancel**, and ends with **Back to the bench**.
+
+### Sites
+
+Each site shows the apps installed on it. On each site:
+
+| Button | What it does |
+|---|---|
+| **Open as Administrator** | Opens the site's desk in a new tab, already signed in, using Frappe's own login. The bench must be running, since sign-ins are kept in its Redis. The site's name must open in a browser: names ending in `.localhost` always do; any other needs a line in `/etc/hosts`. |
+| **Back up** | `bench --site … backup --with-files`. **Back up all** does every site, side by side. |
+| **Config** | Edits the site's `site_config.json`. Passwords and keys show as `********` and keep their value unless you type a new one; the file must stay valid JSON and keep its `db_name`. |
+| **Drop** | `bench drop-site`, after asking for the MariaDB root password. bench backs the site up first and moves its folder to `archived_sites`. |
+| **×** on an app | `bench --site … uninstall-app … --yes`, after you confirm. bench backs the site up first; the app stays in the bench. |
+
+**Migrate all**, with **Back up first**, migrates every site of the bench as described [above](#migrating-several-sites-at-once).
+
+### Apps
+
+Each app's branch and last commit. **Check for updates** fetches each app's remote branch and shows how many new
+commits it has, or *Up to date*; *Local changes* means files in the app were edited. **Update** pulls the new
+commits (`bench update --pull --apps <app>`); **Change branch** lists the repository's branches and moves the app to
+the one you pick (`bench switch-to-branch`). Both then run `bench setup requirements`, migrate every site and build
+that app's assets.
+
+### Backups
+
+![Backups: the bench's own, ready to restore as a new site, and a Frappe Cloud site's backups](screenshots/12-backups.png)
+
+Every backup in the bench's sites, newest first, with the files it has and its size. **Restore as a new site** opens
+the wizard's [New site from a backup](#adding-apps-to-an-existing-bench) form for this bench, filled in. That is how
+to **copy a site**, for example for UAT: back it up, then restore it under a new name. The copy starts with outgoing
+email muted and the scheduler paused.
+
+#### Backups from Frappe Cloud
+
+Type a Frappe Cloud site's address (`mysite.frappe.cloud`) and click **Ask for access**. The wizard shows a code
+and a link; someone on that site's team signs in to Frappe Cloud, opens the link and approves the request, checking
+the code matches. **Check again** then lists the site's backups; **Download into this bench** fetches one into
+`fc-backups/<site>/` in the bench, where it shows under Backups, ready to restore. **Take a new backup** asks
+Frappe Cloud for a fresh one, and **Remove** withdraws the access.
+
+- Nothing is configured in the wizard: no API key or Frappe Cloud login. The approval is the permission.
+- It uses Frappe Cloud's migration API, the way Frappe's [Pilot](https://github.com/frappe/pilot) does, which
+  serves a site's offsite backups. Sites from several teams can be listed at once, each with its own access.
+- **Frappe Cloud address** is `https://cloud.frappe.io` for everyone, except an organisation that runs its own
+  Frappe Cloud (Press); each site keeps the address it was added with.
+- The access token is kept in `~/.local/state/bench-wizard/frappe-cloud.json`, readable only by you. The download
+  links are signed and short-lived, and are not written to the run's log.
+
+### Logs
+
+![Logs: a bench's log with an error and its traceback in red](screenshots/13-logs.png)
+
+Pick any file in the bench's `logs/` folder. **Search** keeps only the lines with the text, **Errors only** keeps
+error lines and tracebacks (shown in red anyway), and **Follow** adds new lines as the bench writes them.
 
 ## Several runs at once
 
@@ -421,7 +513,11 @@ folders in your home, and runs without the DevTools pipe, so reopening there ope
 | **Start setup** is disabled | A pre-flight check failed. Fix it (for example remove a leftover bench folder) and click **Re-run checks**. |
 | A step failed during Run | Open the step's log, fix the cause, then **Retry step N**. `pip`/`yarn` cache clashes usually pass on retry. |
 | The extension card never shows *connected* | Start the wizard without `--port`, reload the extension, and make sure ports 47615–47619 are not all taken. |
-| "this bench runs Frappe N" when loading a bench | Existing-bench mode supports only the versions in the catalog (15 and 16). |
+| "new benches are set up on Version 15, Version 16 only" | A bench of another version can be used as an existing bench, but the wizard sets up new benches only on the catalog's versions. |
+| **Open as Administrator** is greyed out | The bench is not running; press **Start** at the bottom of its page. |
+| "… does not resolve on this machine" | The site's name does not open in a browser. Add `127.0.0.1 <site>` to `/etc/hosts`, or use a site name ending in `.localhost`. |
+| A Frappe Cloud site stays *Pending* | The request has not been approved yet. Someone on the site's team must open the approval link while signed in to Frappe Cloud. |
+| A migrate failed with *Missing column* or *Duplicate rows* | The note under the run names the patch. Fix the data or run the patch it depends on, then **Retry failed**. |
 | A site shows "Cannot read its apps" | `bench --site <site> list-apps` failed. Check that MariaDB is running and the site's config is valid. |
 | **Start** says "port N is in use" | Another bench (or program) holds that port. Stop it, or use **Auto-allocate ports** and **Apply** so this bench gets ports of its own. |
 | **Start** says "bench start stopped right away" | The lines shown come from `logs/bench-start.log` in the bench. A Redis "Address already in use" means a port clash; a missing `Procfile` means the bench needs `bench setup procfile`. |
@@ -439,9 +535,11 @@ python3 -m unittest discover -s tests
 ## Notes
 
 - Bench folder paths must not contain spaces.
-- Passwords and tokens are never written to disk or shown in logs.
-- A new bench always goes into a new folder. Existing-bench mode only adds apps, or a new site, to a bench; it
-  never removes anything.
+- Passwords and tokens are never shown in logs, and never written to disk, except the Frappe Cloud access token
+  (in a file only you can read) when you ask for access to a site.
+- A new bench always goes into a new folder. Existing-bench mode only adds apps, or a new site, to a bench. Removing
+  something (Drop, uninstalling an app) happens only on a bench's own page, after you confirm it, and bench backs the
+  site up first.
 - Screenshots in this README were taken from the wizard itself, with demo benches, a placeholder home folder and a
   stand-in `bench` command.
 
