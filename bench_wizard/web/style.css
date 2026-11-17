@@ -288,6 +288,7 @@ label.tog input,.app input[type=checkbox]{width:18px;height:18px;margin:2px 0 0;
 
 /* ---------- appearance panel (a popover: light-dismiss and Esc come with it) */
 .theme-panel{position:fixed;inset:72px auto auto 16px;margin:0;width:min(400px,calc(100vw - 32px));padding:20px;border:0;border-radius:24px;background:var(--md-surface-container);color:var(--md-on-surface);box-shadow:var(--shadow-3);display:none;flex-direction:column;gap:18px;font-family:var(--sans)}
+.theme-panel.open{display:flex;z-index:10}  /* no-popover fallback (Safari < 17) */
 .theme-panel:popover-open{display:flex}
 .theme-panel .tp-h{display:flex;align-items:center;justify-content:space-between}
 .theme-panel .tp-l{font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--md-on-surface-variant);margin-bottom:10px}

@@ -1327,6 +1327,14 @@ async function setBackground(file) {
 $('tp-file').addEventListener('change', (ev) => { if (ev.target.files[0]) setBackground(ev.target.files[0]); ev.target.value = ''; });
 $('tp-dim').addEventListener('input', (ev) => { theme.dim = Number(ev.target.value); saveTheme(); applyTheme(false); });
 darkQuery.addEventListener('change', () => { if (theme.mode === 'system') applyTheme(true); });
+// Safari before 17 has no popover: there the palette button and Close toggle the panel by hand.
+if (!Object.prototype.hasOwnProperty.call(HTMLElement.prototype, 'popover')) {
+  document.addEventListener('click', (ev) => {
+    if (ev.target.closest('[popovertarget=theme]')) $('theme').classList.toggle('open');
+    else if (!ev.target.closest('#theme')) $('theme').classList.remove('open');
+  });
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') $('theme').classList.remove('open'); });
+}
 applyTheme(false);
 
 boot();

@@ -1,9 +1,11 @@
 import json
 import os
+import shutil
 import socket
 import stat
 import tempfile
 import unittest
+from unittest import mock
 from collections import namedtuple
 from pathlib import Path
 
@@ -105,7 +107,7 @@ class ProjectsTest(unittest.TestCase):
             self.assertFalse(match(*argv), argv)
 
 
-@unittest.skipUnless(os.path.isdir("/proc/self"), "needs /proc")
+@unittest.skipUnless(os.path.isdir("/proc/self") or shutil.which("ps"), "needs /proc or ps")
 class StartStopTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -135,3 +137,43 @@ class StartStopTest(unittest.TestCase):
         self.assertEqual(projects.stop(self.folder, wait=5), 1)
         self.assertNotIn(self.folder, projects.usage([self.folder]))
         self.assertEqual(projects.stop(self.folder, wait=1), 0)
+
+    @unittest.skipUnless(shutil.which("ps") and (shutil.which("lsof") or os.path.exists("/usr/sbin/lsof")), "needs ps and lsof")
+    def test_start_then_stop_without_proc(self):
+        # macOS has no /proc: running benches are found with ps and lsof instead
+        isdir = os.path.isdir
+        with mock.patch.object(projects.os.path, "isdir", lambda p: False if p == "/proc/self" else isdir(p)):
+            self.test_start_then_stop()
+
+
+class PsListingTest(unittest.TestCase):
+    """The ps and lsof output macOS gives: arguments space-separated, rss in KB, cwd from lsof -Fn."""
+
+    PS = """  101  2048 /Users/dev/.local/bin/python3 /Users/dev/.local/bin/honcho start
+  102  9216 redis-server 127.0.0.1:13000
+  103 51200 /Users/dev/b/env/bin/python /Users/dev/b/env/bin/gunicorn -b 127.0.0.1:8000 frappe.app:application
+  104  4096 /Applications/Cursor.app/Contents/MacOS/Cursor /Users/dev/b/frappe-bench
+  105  1024 node /Users/dev/b/apps/frappe/socketio.js
+"""
+    LSOF = "p101\nfcwd\nn/Users/dev/b\np102\nfcwd\nn/Users/dev/b/config/pids\np103\nfcwd\nn/Users/dev/b/sites\n"
+
+    def test_parse(self):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            out = self.PS if argv[0] == "ps" else self.LSOF
+            return projects.subprocess.CompletedProcess(argv, 0, out, "")
+        with mock.patch.object(projects.subprocess, "run", run):
+            found = projects._procs_ps()
+        self.assertEqual(sorted((pid, cwd, rss) for pid, cwd, _, rss in found),
+                         [(101, "/Users/dev/b", 2048 * 1024), (102, "/Users/dev/b/config/pids", 9216 * 1024),
+                          (103, "/Users/dev/b/sites", 51200 * 1024)])
+        self.assertEqual(calls[1][-1], "101,102,103,105")  # the editor (104) is never asked about
+        with mock.patch.object(projects.subprocess, "run", run), \
+                mock.patch.object(projects.os.path, "isdir", lambda p: False):
+            self.assertEqual(projects.usage(["/Users/dev/b"]), {"/Users/dev/b": {"rss": 62464 * 1024, "procs": 3}})
+
+    def test_no_ps(self):
+        with mock.patch.object(projects.subprocess, "run", side_effect=FileNotFoundError("ps")):
+            self.assertIsNone(projects._procs_ps())

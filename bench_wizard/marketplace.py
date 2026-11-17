@@ -6,6 +6,9 @@ returns an app's sources needs a Frappe Cloud login.
 import html as html_mod
 import json
 import re
+import ssl
+import subprocess
+import urllib.error
 import urllib.request
 
 from . import deps
@@ -26,8 +29,25 @@ def _get(path, timeout=20):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return resp.read().decode("utf-8", "replace")
+    except urllib.error.URLError as exc:
+        if not isinstance(exc.reason, ssl.SSLError):
+            raise MarketplaceError(f"cannot reach Frappe Cloud: {exc}") from exc
+        # Python from python.org on macOS trusts no certificate until its "Install Certificates" script has run;
+        # curl uses the system's certificates.
+        return _curl(SITE + path, timeout)
     except OSError as exc:
         raise MarketplaceError(f"cannot reach Frappe Cloud: {exc}") from exc
+
+
+def _curl(url, timeout):
+    try:
+        result = subprocess.run(["curl", "-fsSL", "--max-time", str(timeout), "-A", "bench-wizard", url],
+                                capture_output=True, timeout=timeout + 5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise MarketplaceError(f"cannot reach Frappe Cloud: {exc}") from exc
+    if result.returncode != 0:
+        raise MarketplaceError(f"cannot reach Frappe Cloud: {result.stderr.decode('utf-8', 'replace').strip()}")
+    return result.stdout.decode("utf-8", "replace")
 
 
 def apps(fetch=_get):

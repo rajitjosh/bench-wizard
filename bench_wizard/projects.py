@@ -14,7 +14,9 @@ BASE_PORTS = {"webserver_port": 8000, "socketio_port": 9000, "file_watcher_port"
               "redis_cache": 13000, "redis_queue": 11000}
 REDIS_KEYS = ("redis_cache", "redis_queue")
 # Folders a bench never sits in; skipping them keeps the scan of the home folder quick.
-SKIP = {"node_modules", "env", "apps", "sites", "logs", "__pycache__", "Library", "snap", "site-packages"}
+# Pictures, Movies and Music are also macOS privacy-protected: reading them pops up a permission prompt.
+SKIP = {"node_modules", "env", "apps", "sites", "logs", "__pycache__", "Library", "snap", "site-packages",
+        "Pictures", "Movies", "Music"}
 # The processes `bench start` runs, matched on their program and arguments, not on any path: an editor, shell
 # or AI agent working in the bench folder has "frappe-bench" in its arguments but is not the bench running.
 BENCH_PROCS = re.compile(rb"(?:^|[\0/])(?:honcho|redis-server|gunicorn)(?:\0|$| )|frappe\.utils\.bench_helper"
@@ -109,9 +111,12 @@ def port_free(port):
     with socket.socket() as sock:
         try:
             sock.bind(("127.0.0.1", port))
-            return True
         except OSError:
             return False
+    # macOS can let that bind through while a dual-stack ([::]) listener, such as Node's, holds the port
+    with socket.socket() as sock:
+        sock.settimeout(0.3)
+        return sock.connect_ex(("127.0.0.1", port)) != 0
 
 
 def free_slot(used, is_free=port_free):
@@ -143,12 +148,11 @@ def allocate(benches, is_free=port_free):
 
 
 def _procs():
-    """(pid, cwd, cmdline, rss) of every bench process on this machine; None where there is no /proc.
+    """(pid, cwd, cmdline, rss) of every bench process on this machine; None where this cannot be told."""
+    return _procs_linux() if os.path.isdir("/proc/self") else _procs_ps()
 
-    shortcut: Linux only; use `ps` on macOS if running benches must be seen there.
-    """
-    if not os.path.isdir("/proc/self"):
-        return None
+
+def _procs_linux():
     page = os.sysconf("SC_PAGE_SIZE")
     found = []
     for pid in os.listdir("/proc"):
@@ -165,6 +169,35 @@ def _procs():
         except (OSError, ValueError, IndexError):
             continue
     return found
+
+
+def _procs_ps():
+    """The same from `ps` and `lsof`, for macOS, which has no /proc. Arguments come space-separated here."""
+    try:
+        listing = subprocess.run(["ps", "-A", "-ww", "-o", "pid=,rss=,command="], capture_output=True, text=True,
+                                 timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    bench = {}
+    for line in listing.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit() and BENCH_PROCS.search(parts[2].encode()):
+            bench[int(parts[0])] = (parts[2].encode(), int(parts[1]) * 1024)  # ps gives rss in KB
+    if not bench:
+        return []
+    lsof = shutil.which("lsof") or "/usr/sbin/lsof"  # /usr/sbin is often not on PATH
+    try:  # -w: no warnings; lsof exits 1 when a process is gone by now, so only its output counts
+        out = subprocess.run([lsof, "-w", "-a", "-d", "cwd", "-Fn", "-p", ",".join(map(str, bench))],
+                             capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    cwds, pid = {}, None
+    for line in out.splitlines():
+        if line[:1] == "p" and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line[:1] == "n" and pid in bench:
+            cwds[pid] = line[1:]
+    return [(pid, cwds[pid], *bench[pid]) for pid in bench if pid in cwds]
 
 
 def _inside(path, folder):
@@ -210,7 +243,7 @@ def start(folder, env, wait=3):
 def stop(folder, wait=15):
     """Stop the bench running in `folder` as Ctrl+C would: honcho stops every process it started.
 
-    Returns how many processes were signalled (0: nothing was running), or None where there is no /proc.
+    Returns how many processes were signalled (0: nothing was running), or None where this cannot be told.
     Raises PermissionError for a bench run by another user.
     """
     procs = _procs()
@@ -225,7 +258,7 @@ def stop(folder, wait=15):
         except ProcessLookupError:
             pass
     deadline = time.monotonic() + wait
-    while targets and time.monotonic() < deadline and any(_inside(p[1], folder) for p in _procs()):
+    while targets and time.monotonic() < deadline and any(_inside(p[1], folder) for p in _procs() or ()):
         time.sleep(0.3)
     return len(targets)
 

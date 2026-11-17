@@ -1,7 +1,10 @@
 import json
 import subprocess
 import tempfile
+import ssl
 import unittest
+import urllib.error
+from unittest import mock
 
 from bench_wizard import marketplace
 
@@ -56,3 +59,25 @@ class MarketplaceTest(unittest.TestCase):
         with mock.patch.object(marketplace.deps, "_git", return_value=gone):
             with self.assertRaisesRegex(marketplace.MarketplaceError, "private or has been removed"):
                 marketplace.branches("https://github.com/x/y.git", "version-15")
+
+    def test_certificate_error_falls_back_to_curl(self):
+        # python.org Python on macOS has no CA certificates until "Install Certificates" runs
+        cert = urllib.error.URLError(ssl.SSLCertVerificationError("unable to get local issuer certificate"))
+        done = subprocess.CompletedProcess([], 0, b'{"message": []}', b"")
+        with mock.patch.object(marketplace.urllib.request, "urlopen", side_effect=cert), \
+                mock.patch.object(marketplace.subprocess, "run", return_value=done) as run:
+            self.assertEqual(marketplace._get("/x"), '{"message": []}')
+        self.assertEqual(run.call_args[0][0][0], "curl")
+        self.assertEqual(run.call_args[0][0][-1], marketplace.SITE + "/x")
+        failed = subprocess.CompletedProcess([], 6, b"", b"curl: (6) Could not resolve host")
+        with mock.patch.object(marketplace.urllib.request, "urlopen", side_effect=cert), \
+                mock.patch.object(marketplace.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(marketplace.MarketplaceError, "Could not resolve host"):
+                marketplace._get("/x")
+
+    def test_other_network_errors_do_not_try_curl(self):
+        with mock.patch.object(marketplace.urllib.request, "urlopen", side_effect=urllib.error.URLError("timed out")), \
+                mock.patch.object(marketplace.subprocess, "run") as run:
+            with self.assertRaisesRegex(marketplace.MarketplaceError, "cannot reach Frappe Cloud"):
+                marketplace._get("/x")
+        run.assert_not_called()

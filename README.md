@@ -396,6 +396,12 @@ build and runs under Rosetta on Apple silicon. MariaDB runs as a Homebrew servic
 `icon-mac.svg` (render it at 1024px, make an `.iconset` with `sips`, then run `iconutil -c icns`). In `--app` mode the wizard keeps running until you quit the
 browser window with ⌘Q, since closing a window does not quit a Mac app.
 
+The Projects screen finds running benches with `ps` and `lsof`, since macOS has no `/proc`. Its scan of your home
+folder skips `Library`, `Pictures`, `Movies` and `Music`; looking in `Desktop`, `Documents` or `Downloads` may make
+macOS ask once whether Terminal (or Python) may read that folder. Allow it if your benches live there. Opened in
+Safari rather than in its own window, the wizard needs Safari 16.2 or later for its colours; on Safari before 17 the
+Appearance panel opens without the browser's popover support.
+
 The window belongs to a browser process of its own, so in the Dock it shows as a second browser icon (and
 a minimised window goes into that icon when "Minimise windows into application icon" is on). Opening Bench
 Wizard again, from Spotlight or the Applications folder, brings that window back, un-minimising it; only
@@ -421,7 +427,8 @@ folders in your home, and runs without the DevTools pipe, so reopening there ope
 | **Start** says "bench start stopped right away" | The lines shown come from `logs/bench-start.log` in the bench. A Redis "Address already in use" means a port clash; a missing `Procfile` means the bench needs `bench setup procfile`. |
 | "another run is still working in this bench folder" | Wait for that run (under **Runs**) to finish, or cancel it. |
 | A Marketplace app's branches cannot be listed | Its Marketplace page links to a repository that is private or gone. Ask the publisher for access, or add the app from where it lives now as a custom app. |
-| **Stop**, or the running state, is unavailable | Running benches are found through `/proc`, so this works on Linux only. On a Mac, stop a bench with Ctrl+C where it runs. |
+| **Stop**, or the running state, is unavailable | Running benches are found through `/proc` on Linux and `ps` plus `lsof` on a Mac. If neither works, stop a bench with Ctrl+C where it runs. |
+| The Marketplace says "cannot reach Frappe Cloud" | Check the network. On a Mac with Python from python.org, the wizard already retries certificate errors with `curl`; running *Install Certificates.command* in that Python's folder fixes Python itself. |
 
 ## Tests
 
@@ -444,7 +451,6 @@ python3 -m unittest discover -s tests
   should queue rather than fail.
 - **A Docker sandbox bench.** A throwaway bench in a container for trying something out, or for a functional team
   to test on without setting up a machine.
-- **Running benches on macOS.** Find them with `ps` instead of `/proc`, so Projects can show and stop them there too.
 - **Appearance that follows you.** Keep the colour, mode and background with the wizard's settings instead of in
   one browser.
 

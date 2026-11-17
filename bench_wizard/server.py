@@ -462,7 +462,7 @@ class App:
             raise ApiError(403, "this bench runs as another user (a production bench under supervisor?); "
                                 "stop it the way it was started") from exc
         if stopped is None:
-            raise ApiError(400, "stopping a bench from here works on Linux only; press Ctrl+C where it runs")
+            raise ApiError(400, "this system cannot tell which processes belong to the bench (no /proc, ps or lsof); press Ctrl+C where it runs")
         if not stopped:
             raise ApiError(409, "nothing of this bench is running")
         return {"ok": True}
