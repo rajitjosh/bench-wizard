@@ -77,12 +77,19 @@ class ServerTest(unittest.TestCase):
         self.app = server.App(
             catalog.load(ROOT / "catalog.json"), state_root=str(self.tmp / "state"), token="tok",
             checks=self.checks, resolve=fake_resolve, preflight=fake_preflight,
-            inspect_app=fake_inspect_app, inspect_backup=fake_inspect_backup, reveal=self.revealed.append)
+            inspect_app=fake_inspect_app, inspect_backup=fake_inspect_backup, reveal=self.revealed.append,
+            home=str(self.tmp / "home"), port_free=lambda port: True, resources=self.fake_resources)
         self.httpd = server.make_server(self.app, port=0)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, args=(0.02,), daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
+
+    warnings = []
+
+    def fake_resources(self, path):
+        return {"memory": {"total": 16, "available": 8}, "disk": {"path": path, "total": 100, "free": 50},
+                "warnings": list(self.warnings)}
 
     def request(self, method, path, body=None, token="tok", host=None, origin=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -215,9 +222,10 @@ class ServerTest(unittest.TestCase):
         status, data = self.request("POST", "/api/plan", self.answers(apps=[app]))
         self.assertEqual(status, 200)
         self.assertNotIn("ghp_", json.dumps(data))
-        self.assertIn("https://github.com/acme/private-app.git", data["steps"][2]["command"])
+        get = next(i for i, s in enumerate(data["steps"]) if s["id"] == "get-private_app")
+        self.assertIn("https://github.com/acme/private-app.git", data["steps"][get]["command"])
         self.assertIn("ghp_exampletoken123", self.app.pending["env"]["GIT_CONFIG_KEY_0"])
-        self.assertNotIn("ghp_", " ".join(self.app.pending["steps"][2].argv))
+        self.assertNotIn("ghp_", " ".join(self.app.pending["steps"][get].argv))
 
     def test_import_list_keeps_order_and_reports_failures(self):
         body = {"apps": [{"url": "https://github.com/x/zeta", "branch": "v1.0.0"},
@@ -251,9 +259,9 @@ class ServerTest(unittest.TestCase):
         text = json.dumps(data)
         self.assertNotIn("rootpw", text)
         self.assertNotIn("adm in", text)
-        commands = [s["command"] for s in data["steps"]]
-        self.assertTrue(commands[0].startswith("bench init"))
-        self.assertIn("••••", commands[3])
+        commands = {s["id"]: s["command"] for s in data["steps"]}
+        self.assertTrue(data["steps"][0]["command"].startswith("bench init"))
+        self.assertIn("••••", commands["new-site"])
         self.assertEqual(data["notices"], ["a notice"])
         self.assertEqual(data["apps"][0]["name"], "erpnext")
 
@@ -364,6 +372,52 @@ class ServerTest(unittest.TestCase):
         self.request("POST", "/api/run/cancel", {})
         self.wait_run("cancelled")
 
+    def test_plan_migrate_for_several_sites(self):
+        bench = BenchInfo(str(self.tmp / "b"), "version-15", "18", ["frappe"],
+                          {"a.localhost": {"apps": ["frappe"]}, "b.localhost": {"error": "no database"}})
+        self.app.inspect_bench_fn = lambda folder, cat, env: bench
+        body = {"migrate": True, "folder": "~/b", "sites": ["a.localhost", "b.localhost", "a.localhost"]}
+        status, plan = self.request("POST", "/api/plan", body)
+        self.assertEqual(status, 200)
+        self.assertEqual([s["id"] for s in plan["steps"]], ["migrate-a.localhost", "migrate-b.localhost"])
+        self.assertEqual((plan["ok"], plan["migrate"], plan["node"]), (True, ["a.localhost", "b.localhost"], "18"))
+        self.assertTrue(self.app.pending["parallel"])
+        self.assertEqual(self.app.pending["services"][0]["before"], "migrate-a.localhost")
+        for sites in ([], ["nope.localhost"], None):
+            self.assertEqual(self.request("POST", "/api/plan", dict(body, sites=sites))[0], 400, sites)
+
+    def plan_sleep(self, folder):
+        from bench_wizard.planner import Step
+        self.request("POST", "/api/plan", self.answers(folder=folder))
+        self.app.pending["steps"] = [Step("a", "a", ["sleep", "5"], str(self.tmp))]
+        status, data = self.request("POST", "/api/run", {})
+        return status, data.get("run_id")
+
+    def test_runs_in_different_benches_go_side_by_side_but_not_in_one_bench(self):
+        status, first = self.plan_sleep(str(self.tmp / "one"))
+        status2, second = self.plan_sleep(str(self.tmp / "two"))
+        self.assertEqual((status, status2), (200, 200))
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.plan_sleep(str(self.tmp / "one"))[0], 409)
+        runs = self.request("GET", "/api/runs")[1]["runs"]
+        self.assertEqual([(r["run_id"], r["state"]) for r in runs], [(second, "running"), (first, "running")])
+        self.assertEqual(self.request("GET", "/api/run")[1]["run_id"], second)  # the last one by default
+        self.assertEqual(self.request("GET", f"/api/run?run={first}")[1]["summary"]["folder"], str(self.tmp / "one"))
+        self.assertEqual(self.request("POST", "/api/run/cancel", {"run": first})[0], 200)
+        self.wait_run_id(first, "cancelled")
+        self.assertEqual(self.request("GET", f"/api/run?run={second}")[1]["state"], "running")
+        self.assertEqual(self.request("POST", "/api/run/dismiss", {"run": first})[0], 200)
+        self.assertEqual(self.request("GET", f"/api/run?run={first}")[1]["state"], "none")
+        self.assertEqual(self.request("POST", "/api/run/cancel", {"run": first})[0], 409)
+        self.request("POST", "/api/run/cancel", {"run": second})
+        self.wait_run_id(second, "cancelled")
+
+    def wait_run_id(self, run_id, state):
+        deadline = time.time() + 10
+        while self.request("GET", f"/api/run?run={run_id}")[1]["state"] != state:
+            self.assertLess(time.time(), deadline, f"{run_id} never reached {state}")
+            time.sleep(0.05)
+
     def test_dismiss_forgets_a_finished_run_but_not_a_running_one(self):
         from bench_wizard.planner import Step
         self.start_real_run()
@@ -409,6 +463,116 @@ class ServerTest(unittest.TestCase):
         conn.request("GET", "/api/run/events")
         self.assertEqual(conn.getresponse().status, 403)
         conn.close()
+
+    # -- projects, ports, marketplace ----------------------------------
+    def two_clashing_benches(self):
+        from bench_wizard import projects
+        from tests.test_projects import make_bench
+        base = projects.slot(0)
+        ports = dict(base, redis_cache="redis://127.0.0.1:13000", redis_queue="redis://127.0.0.1:11000")
+        return (make_bench(self.tmp / "home" / "git" / "a" / "frappe-bench", ports),
+                make_bench(self.tmp / "home" / "git" / "b" / "frappe-bench", ports, sites=("x.localhost", "y.localhost")))
+
+    def test_projects_lists_benches_ports_clashes_and_resources(self):
+        a, b = self.two_clashing_benches()
+        status, data = self.request("GET", "/api/projects")
+        self.assertEqual(status, 200)
+        self.assertEqual([x["folder"] for x in data["benches"]], [a, b])
+        self.assertEqual(data["benches"][1]["sites"], ["x.localhost", "y.localhost"])
+        self.assertIn(8000, data["benches"][0]["clashes"])
+        self.assertEqual(data["benches"][0]["version_title"], "Version 15")
+        self.assertEqual(data["resources"]["disk"]["free"], 50)
+
+    def test_projects_add_remembers_a_bench_outside_home(self):
+        from tests.test_projects import make_bench
+        outside = make_bench(self.tmp / "elsewhere" / "bench")
+        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": str(self.tmp)})[0], 400)
+        self.assertEqual(self.request("POST", "/api/projects/add", {"folder": outside})[0], 200)
+        self.assertIn(outside, [x["folder"] for x in self.request("GET", "/api/projects")[1]["benches"]])
+
+    def test_start_bench_checks_ports_then_starts_it(self):
+        from tests.test_projects import make_bench
+        folder = make_bench(self.tmp / "home" / "bench")
+        started = []
+        self.app.start_bench = lambda f, env: started.append(f)
+        self.app.port_free = lambda port: port != 13000
+        status, data = self.request("POST", "/api/bench/start", {"folder": folder})
+        self.assertEqual(status, 409)
+        self.assertIn("port 13000 is in use", data["error"])
+        self.assertEqual(started, [])
+        self.app.port_free = lambda port: True
+        status, data = self.request("POST", "/api/bench/start", {"folder": folder})
+        self.assertEqual((status, data["port"], started), (200, 8000, [folder]))
+        self.app.start_bench = lambda f, env: "Address already in use"
+        status, data = self.request("POST", "/api/bench/start", {"folder": folder})
+        self.assertEqual(status, 409)
+        self.assertIn("Address already in use", data["error"])
+        self.assertEqual(self.request("POST", "/api/bench/start", {"folder": str(self.tmp)})[0], 400)
+
+    def test_stop_bench(self):
+        from tests.test_projects import make_bench
+        folder = make_bench(self.tmp / "home" / "bench")
+        for result, status in ((2, 200), (0, 409), (None, 400)):
+            self.app.stop_bench = lambda f, result=result: result
+            self.assertEqual(self.request("POST", "/api/bench/stop", {"folder": folder})[0], status)
+
+    def test_allocate_then_plan_ports_for_a_clashing_bench(self):
+        from bench_wizard import projects
+        a, b = self.two_clashing_benches()
+        moves = self.request("POST", "/api/ports/allocate", {})[1]["moves"]
+        self.assertEqual(moves, {b: projects.slot(1)})
+        status, plan = self.request("POST", "/api/plan", {"folder": b, "ports": moves[b]})
+        self.assertEqual(status, 200)
+        self.assertEqual([s["id"] for s in plan["steps"]], ["ports", "setup-redis", "procfile"])
+        self.assertEqual(plan["title"], "Move to port 8001")
+        bad = dict(moves[b], webserver_port=80)
+        self.assertEqual(self.request("POST", "/api/plan", {"folder": b, "ports": bad})[0], 400)
+        self.assertEqual(self.request("POST", "/api/plan", {"folder": str(self.tmp), "ports": moves[b]})[0], 400)
+
+    def test_build_plan(self):
+        a, _ = self.two_clashing_benches()
+        status, plan = self.request("POST", "/api/plan", {"folder": a, "build": True})
+        self.assertEqual((status, [s["command"] for s in plan["steps"]]), (200, ["bench build"]))
+        self.assertTrue(plan["ok"])
+
+    def test_new_bench_gets_a_port_slot_no_other_bench_uses(self):
+        from bench_wizard import projects
+        self.two_clashing_benches()
+        status, plan = self.request("POST", "/api/plan", self.answers())
+        self.assertEqual(plan["ports"], projects.slot(1))
+        self.assertEqual([s["id"] for s in plan["steps"]][:4], ["init", "ports", "setup-redis", "procfile"])
+
+    def test_low_memory_or_disk_shows_as_a_notice(self):
+        self.warnings = ["Only 1.0 GB of memory is free."]
+        self.assertIn("Only 1.0 GB of memory is free.", self.request("POST", "/api/plan", self.answers())[1]["notices"])
+
+    def test_marketplace_list_and_app(self):
+        from bench_wizard.marketplace import MarketplaceError
+
+        class Market:
+            calls = 0
+
+            def apps(self):
+                Market.calls += 1
+                return [{"name": "tool", "title": "Tool"}]
+
+            def app(self, name):
+                if name != "tool":
+                    raise MarketplaceError("no such app")
+                return {"name": name, "repo": "https://github.com/acme/tool.git", "versions": ["version-15"],
+                        "nightly": False, "free": True}
+
+            def branches(self, repo, version, env=None):
+                return [version, "main"]
+
+        self.app.market = Market()
+        self.assertEqual(self.request("GET", "/api/marketplace")[1]["apps"], [{"name": "tool", "title": "Tool"}])
+        self.request("GET", "/api/marketplace")
+        self.assertEqual(Market.calls, 1)  # fetched once a session
+        data = self.request("POST", "/api/marketplace/app", {"name": "tool", "version": "version-15"})[1]
+        self.assertEqual((data["ok"], data["branches"], data["free"]), (True, ["version-15", "main"], True))
+        self.assertEqual(self.request("POST", "/api/marketplace/app", {"name": "nope"})[1],
+                         {"ok": False, "error": "no such app"})
 
     # -- Frappe Cloud extension ----------------------------------------
     EXT = "chrome-extension://abcdefghijklmnop"

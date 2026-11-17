@@ -105,8 +105,8 @@ def main():
         if window is not None:
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             window.wait()
-            while app.runner is not None and app.runner.state == "running":
-                time.sleep(2)  # closing the window does not interrupt a setup in progress
+            while app.active_runs():
+                time.sleep(2)  # closing the window does not interrupt a run in progress
             httpd.shutdown()
             return
         print(f"Bench Wizard is running at:\n\n  {url}\n\nKeep this terminal open. Press Ctrl+C to stop.",
@@ -116,8 +116,8 @@ def main():
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
-        if app.runner:
-            app.runner.cancel()
+        for run in app.active_runs():
+            run["runner"].cancel()
     finally:
         desktop.forget_instance(INSTANCE, os.getpid())
 

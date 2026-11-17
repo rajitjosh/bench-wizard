@@ -2,6 +2,7 @@
 import os
 import re
 import shlex
+import sys
 from dataclasses import dataclass
 
 MASK = "••••"
@@ -57,16 +58,58 @@ def _nvmrc(node, folder):
                 folder)
 
 
+def _site_name(site):
+    # The site is a folder the bench already has (the server checks); it only must not read as an option.
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", site):
+        raise PlanError(f"cannot use the site name {site!r}")
+    return site
+
+
+def plan_migrate(answers):
+    """`bench migrate` for each site of an existing bench; the runner runs these side by side."""
+    return [Step(f"migrate-{site}", f"migrate {site}", ["bench", "--site", _site_name(site), "migrate"],
+                 answers["folder"]) for site in answers["sites"]]
+
+
+PROCFILE_PORT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "procfile_port.py")
+PORT_KEYS = ("webserver_port", "socketio_port", "file_watcher_port", "redis_cache", "redis_queue")
+
+
+def plan_ports(folder, ports):
+    """Move a bench to new ports: its common config, its Redis config files and its Procfile's web port.
+
+    They take effect the next time the bench is started.
+    """
+    values = [ports.get(key) for key in PORT_KEYS]
+    if not all(isinstance(v, int) and not isinstance(v, bool) and 1024 <= v <= 65535 for v in values):
+        raise PlanError("every port must be a number from 1024 to 65535")
+    if len(set(values)) != len(values):
+        raise PlanError("a bench needs a different port for each service")
+    argv = ["bench", "config", "set-common-config"]
+    for key in PORT_KEYS[:3]:
+        argv += ["-c", key, str(ports[key])]
+    # set-common-config reads each value as a Python literal, so a URL goes in quoted; redis_socketio
+    # follows redis_cache, as bench itself keeps it.
+    for key, port in (("redis_cache", ports["redis_cache"]), ("redis_queue", ports["redis_queue"]),
+                      ("redis_socketio", ports["redis_cache"])):
+        argv += ["-c", key, repr(f"redis://127.0.0.1:{port}")]
+    return [Step("ports", "set ports in common_site_config.json", argv, folder),
+            Step("setup-redis", "bench setup redis", ["bench", "setup", "redis"], folder),
+            Step("procfile", f"web port {ports['webserver_port']} in Procfile",
+                 [sys.executable, PROCFILE_PORT, str(ports["webserver_port"])], folder)]
+
+
+def plan_build(folder):
+    return [Step("build", "bench build", ["bench", "build"], folder)]
+
+
 def plan_existing(answers):
     """Add apps to a site of a bench that already exists, then rebuild the assets.
 
     Apps marked `on_bench` are in the bench already and are only installed on the site.
     Nothing here removes anything, so no step has a cleanup.
     """
-    folder, site = answers["folder"], answers["site"]
-    # The site is a folder the bench already has (the server checks); it only must not read as an option.
-    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", site):
-        raise PlanError(f"cannot use the site name {site!r}")
+    folder, site = answers["folder"], _site_name(answers["site"])
     on_site = ["bench", "--site", site]
     steps = [_nvmrc(answers["node"], folder)] if answers.get("write_nvmrc") else []
     steps += [_get_app(app, folder) for app in answers["apps"] if not app.get("on_bench")]
@@ -129,6 +172,8 @@ def plan(answers, catalog):
         add("init", "bench init",
             ["bench", "init", folder, "--frappe-branch", version, "--python", f"python{profile['python']}"],
             cwd="/", cleanup=["rm", "-rf", folder], cleanup_required=True)
+        if answers.get("ports"):  # a port slot no other bench uses, so it can run next to them
+            steps += plan_ports(folder, answers["ports"])
     if not existing or answers.get("write_nvmrc"):
         steps.append(_nvmrc(answers.get("node") or profile["node"], folder))
     steps += [_get_app(app, folder) for app in apps if not app.get("on_bench")]

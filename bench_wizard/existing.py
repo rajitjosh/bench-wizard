@@ -35,6 +35,12 @@ def nvm_default_node(home=None):
     return match.group(1) if match else ""
 
 
+def nvmrc_node(folder):
+    """Node major from the bench's .nvmrc, "" when it has none."""
+    match = re.match(r"v?(\d+)", (_read(os.path.join(folder, ".nvmrc")) or "").strip())
+    return match.group(1) if match else ""
+
+
 def installed_apps(folder, site, env):
     """The apps installed on a site, read through the bench itself."""
     try:
@@ -62,7 +68,6 @@ def inspect(folder, catalog, env):
         found = f"Frappe {match.group(1)}" if match else "an unknown Frappe version"
         supported = ", ".join(v["title"] for v in catalog["frappe_versions"].values())
         raise BenchError(f"this bench runs {found}; the wizard supports {supported}")
-    node = re.match(r"v?(\d+)", (_read(os.path.join(folder, ".nvmrc")) or "").strip())
     apps = (_read(os.path.join(folder, "sites", "apps.txt")) or "").split()
     sites_dir = os.path.join(folder, "sites")
     names = sorted(d for d in os.listdir(sites_dir) if os.path.isfile(os.path.join(sites_dir, d, "site_config.json")))
@@ -70,4 +75,4 @@ def inspect(folder, catalog, env):
         raise BenchError(f"{folder} has no sites")
     with ThreadPoolExecutor(max_workers=4) as pool:
         sites = dict(zip(names, pool.map(lambda site: installed_apps(folder, site, env), names)))
-    return BenchInfo(folder, version, node.group(1) if node else "", apps, sites)
+    return BenchInfo(folder, version, nvmrc_node(folder), apps, sites)

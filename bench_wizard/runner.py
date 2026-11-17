@@ -10,8 +10,9 @@ from .gitauth import scrub
 
 
 class Runner:
-    def __init__(self, steps, log_dir, env, services=()):
+    def __init__(self, steps, log_dir, env, services=(), parallel=False):
         self.steps = steps
+        self.parallel = parallel  # run every step side by side, e.g. migrate on several sites
         self.services = list(services)  # {"argv", "cwd", "before": step id}
         self._service_procs = []
         self.log_dir = log_dir
@@ -22,7 +23,7 @@ class Runner:
         self._durations = {s.id: None for s in steps}
         self._lock = threading.Lock()
         self._subscribers = []
-        self._proc = None
+        self._procs = set()
         self._cancelled = False
         self._thread = None
         os.makedirs(log_dir, exist_ok=True)
@@ -49,6 +50,7 @@ class Runner:
     def snapshot(self):
         return {
             "state": self.state,
+            "parallel": self.parallel,
             "failed": self.steps[self.failed_index].id if self.failed_index is not None else None,
             "steps": [{
                 "id": s.id, "title": s.title, "command": s.display(),
@@ -103,10 +105,10 @@ class Runner:
 
     def cancel(self):
         self._cancelled = True
-        proc = self._proc
-        if proc is not None and proc.poll() is None:
-            self._kill(proc, signal.SIGTERM)
-            threading.Timer(5, lambda: proc.poll() is None and self._kill(proc, signal.SIGKILL)).start()
+        for proc in list(self._procs):
+            if proc.poll() is None:
+                self._kill(proc, signal.SIGTERM)
+                threading.Timer(5, lambda p=proc: p.poll() is None and self._kill(p, signal.SIGKILL)).start()
 
     @staticmethod
     def _kill(proc, sig):
@@ -155,35 +157,51 @@ class Runner:
         self._set_run(state)
 
     def _run_steps(self, index, retrying, cleanup):
+        if self.parallel:
+            return self._run_parallel(retrying, cleanup)
         for i in range(index, len(self.steps)):
-            step = self.steps[i]
             self._start_services(i)
-            argv = step.argv
-            started = time.time()
-            self._set_step(step, "running")
-            ok = True
-            if retrying and i == index:
-                if step.cleanup and (cleanup or step.cleanup_required):
-                    self._log(step, "$ " + step.display(step.cleanup, step.cleanup_secret_args))
-                    ok = self._exec(step, step.cleanup, step.cwd)
-                argv = step.retry_argv or step.argv
-            if ok and not self._cancelled:
-                shown = step.display(argv, step.secret_args) if argv is step.argv else step.display(argv, ())
-                self._log(step, "$ " + shown)
-                ok = self._exec(step, argv, step.cwd)
-            duration = round(time.time() - started, 1)
-            if self._cancelled:
-                self._set_step(step, "failed", duration)
+            if not self._step(i, retrying and i == index, cleanup):
                 self.failed_index = i
-                self._finish("cancelled")
-                return
-            if not ok:
-                self._set_step(step, "failed", duration)
-                self.failed_index = i
-                self._finish("failed")
-                return
-            self._set_step(step, "done", duration)
+                return self._finish("cancelled" if self._cancelled else "failed")
         self._finish("done")
+
+    def _run_parallel(self, retrying, cleanup):
+        """Run every step not done yet side by side, with all services up; a retry runs only those again."""
+        self._start_services(len(self.steps) - 1)
+        todo = [i for i, s in enumerate(self.steps) if self._states[s.id] != "done"]
+        ok = {}
+        threads = [threading.Thread(target=lambda i=i: ok.__setitem__(i, self._step(i, retrying, cleanup)))
+                   for i in todo]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        failed = [i for i in todo if not ok.get(i)]
+        if failed:
+            self.failed_index = failed[0]
+            return self._finish("cancelled" if self._cancelled else "failed")
+        self._finish("done")
+
+    def _step(self, i, retrying, cleanup):
+        """Run step i, with its cleanup and retry command when retrying. True when it succeeded."""
+        step = self.steps[i]
+        argv = step.argv
+        started = time.time()
+        self._set_step(step, "running")
+        ok = True
+        if retrying:
+            if step.cleanup and (cleanup or step.cleanup_required):
+                self._log(step, "$ " + step.display(step.cleanup, step.cleanup_secret_args))
+                ok = self._exec(step, step.cleanup, step.cwd)
+            argv = step.retry_argv or step.argv
+        if ok and not self._cancelled:
+            shown = step.display(argv, step.secret_args) if argv is step.argv else step.display(argv, ())
+            self._log(step, "$ " + shown)
+            ok = self._exec(step, argv, step.cwd)
+        ok = ok and not self._cancelled
+        self._set_step(step, "done" if ok else "failed", round(time.time() - started, 1))
+        return ok
 
     def _exec(self, step, argv, cwd):
         try:
@@ -193,12 +211,12 @@ class Runner:
         except OSError as exc:
             self._log(step, f"could not start {argv[0]}: {exc}")
             return False
-        self._proc = proc
+        self._procs.add(proc)
         with proc.stdout:
             for line in proc.stdout:
                 self._log(step, line.rstrip("\n"))
         code = proc.wait()
-        self._proc = None
+        self._procs.discard(proc)
         if code != 0:
             self._log(step, f"exit code {code}")
         return code == 0

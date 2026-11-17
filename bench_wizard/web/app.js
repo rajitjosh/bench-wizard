@@ -16,6 +16,9 @@ const S = {
   importText: '', importBusy: false, importMsg: '', importErrors: [], ext: null,
   plan: null, planning: false, planMsg: '',
   run: null, activeStep: '', follow: true, logs: {}, cleanup: true, runMsg: '', showPw: false,
+  runs: [], pwFor: {}, benchMigrate: false, migrateSites: {},
+  proj: null, projFilter: 'all', projBusy: '', projMsg: '', projNote: '', projSite: {}, portEdits: {}, addFolder: '',
+  mpApps: null, mpQuery: '', mpBusy: false, mpMsg: '', mp: null, mpBranch: '',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -23,8 +26,37 @@ const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const tilde = (p) => (S.catalog && p.startsWith(S.catalog.home + '/') ? '~' + p.slice(S.catalog.home.length) : p);
 const profile = () => S.catalog.frappe_versions[S.version];
-const ARROW = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
-const INFO = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:none"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>';
+// Material icons (Apache 2.0), filled, on the 24px grid; one style everywhere.
+const PATHS = {
+  add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+  add_photo_alternate: 'M19 7v2.99s-1.99.01-2 0V7h-3s.01-1.99 0-2h3V2h2v3h3v2h-3zm-3 4V8h-3V5H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-8h-3zM5 19l3-4 2 3 3-4 4 5H5z',
+  apps: 'M4 8h4V4H4v4zm6 12h4v-4h-4v4zm-6 0h4v-4H4v4zm0-6h4v-4H4v4zm6 0h4v-4h-4v4zm6-10v4h4V4h-4zm-6 4h4V4h-4v4zm6 6h4v-4h-4v4zm0 6h4v-4h-4v4z',
+  arrow_back: 'M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z',
+  arrow_forward: 'M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z',
+  auto_awesome: 'M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z',
+  build: 'M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z',
+  check: 'M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z',
+  close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+  contrast: 'M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.86 7 7.93s-3.06 7.44-7 7.93V4.07z',
+  create_new_folder: 'M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z',
+  dark_mode: 'M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z',
+  dns: 'M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z',
+  info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
+  light_mode: 'M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z',
+  memory: 'M15 9H9v6h6V9zm-2 4h-2v-2h2v2zm8-2V9h-2V7c0-1.1-.9-2-2-2h-2V3h-2v2h-2V3H9v2H7c-1.1 0-2 .9-2 2v2H3v2h2v2H3v2h2v2c0 1.1.9 2 2 2h2v2h2v-2h2v2h2v-2h2c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2zm-4 6H7V7h10v10z',
+  palette: 'M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z',
+  play_arrow: 'M8 5v14l11-7z',
+  priority_high: 'M10 3h4v12h-4zM12 17a2 2 0 1 1 0 4 2 2 0 1 1 0-4z',
+  refresh: 'M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+  stop: 'M6 6h12v12H6z',
+  storage: 'M2 20h20v-4H2v4zm2-3h2v2H4v-2zM2 4v4h20V4H2zm4 3H4V5h2v2zm-4 7h20v-4H2v4zm2-3h2v2H4v-2z',
+  sync: 'M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z',
+};
+const icon = (name, size = 20) => `<svg class="i" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true"><path d="${PATHS[name]}"/></svg>`;
+const ARROW = icon('arrow_forward', 18);
+const INFO = icon('info');
+const BACK_LABEL = `${icon('arrow_back', 18)}Back`;
+const CHECK_BIG = icon('check', 28);
 
 async function api(method, path, body) {
   const res = await fetch(path, {
@@ -117,6 +149,8 @@ function dependants(name) {
 }
 
 const isExisting = () => S.mode === 'existing' && !!S.bench;
+const isMigrate = () => isExisting() && S.benchMigrate;
+const migrateList = () => Object.keys(S.migrateSites).filter((n) => S.migrateSites[n]);
 // A site restored from a backup: the new bench's "Restore" choice, or a new site in a loaded bench.
 const restoring = () => (isExisting() ? S.benchNew : S.siteData === 'restore');
 
@@ -127,19 +161,20 @@ function render() {
   const index = STEPS.findIndex(([id]) => id === S.step);
   S.reached = Math.max(S.reached, index);
   const locked = !!S.run;
-  $('progress').style.width = Math.round(((index + (S.step === 'done' ? 1 : 0.5)) / STEPS.length) * 100) + '%';
+  $('progress').style.width = index < 0 ? '0' : Math.round(((index + (S.step === 'done' ? 1 : 0.5)) / STEPS.length) * 100) + '%';
   $('steps').innerHTML = STEPS.map(([id, label], i) => {
     const failed = id === 'run' && S.run && ['failed', 'cancelled'].includes(S.run.state);
     const cls = id === S.step ? 'current' : (i < index ? 'done' : '');
-    const mark = cls === 'done' ? '✓' : i + 1;
+    const mark = cls === 'done' ? icon('check', 16) : i + 1;
     const canGo = !locked && i < index && i < 4;  // forward moves go through Continue and its checks
     const inner = `<span class="n">${mark}</span>${esc(label)}`;
     return canGo ? `<button class="vstep link ${cls}" data-act="goto" data-arg="${id}">${inner}</button>`
       : `<span class="vstep ${cls} ${failed ? 'failed' : ''}">${inner}</span>`;
   }).join('');
-  $('rail-foot').textContent = locked ? 'Closing this tab does not stop the run. Reopen the URL shown in the terminal to come back.'
-    : 'Nothing is written to disk until you press Start setup on the Review screen.';
-  const wide = S.step === 'run';
+  $('rail-foot').textContent = S.runs.some((r) => r.state === 'running') ? 'Closing this window does not stop runs. Reopen the URL shown in the terminal to come back.'
+    : 'Nothing is written to disk until you press Start on the Review screen.';
+  paintRuns();
+  const wide = S.step === 'run' || S.step === 'projects';
   $('view').className = 'col' + (wide ? ' wide' : '');
   $('footer').className = 'in2' + (wide ? ' wide' : '');
   const [view, footer] = VIEWS[S.step]();
@@ -164,7 +199,7 @@ const radio = (act, arg, on, title, desc, extra = '', disabled = false) => `
 
 const modeCard = () => `<section class="card"><h2>Bench</h2><div class="grid2" role="radiogroup" aria-label="Bench">
   ${radio('mode', 'new', S.mode === 'new', 'Create a new bench', 'Set up Frappe, the apps and a site from scratch.')}
-  ${radio('mode', 'existing', S.mode === 'existing', 'Add apps to an existing bench', 'Load a bench on this machine, then install more apps on one of its sites, or add a new site from a backup.')}
+  ${radio('mode', 'existing', S.mode === 'existing', 'Add apps to an existing bench', 'Load a bench on this machine, then install more apps on one of its sites, add a new site from a backup, or migrate its sites.')}
 </div></section>`;
 
 function viewExisting() {
@@ -172,14 +207,19 @@ function viewExisting() {
   const sites = !b ? '' : Object.entries(b.sites).map(([name, site]) => radio('bench-site', name, name === S.benchSite,
     `<span class="mono">${esc(name)}</span>`, site.apps ? 'Installed: ' + site.apps.join(', ') : 'Cannot read its apps: ' + site.error,
     '', !site.apps)).join('') + radio('bench-new', '', S.benchNew, 'New site from a backup',
-    'Restore a backup, for example from production, as a new site of this bench to look into an issue.');
+    'Restore a backup, for example from production, as a new site of this bench to look into an issue.')
+    + radio('bench-migrate', '', S.benchMigrate, 'Migrate sites', 'Run bench migrate on several sites of this bench at the same time.');
+  const migrate = !b || !S.benchMigrate ? '' : `<section class="card"><h2>Sites to migrate</h2>
+    ${Object.keys(b.sites).map((name) => `<label class="tog"><input type="checkbox" data-msite="${esc(name)}" ${S.migrateSites[name] ? 'checked' : ''}><span class="mono">${esc(name)}</span></label>`).join('')}
+    <p class="lead small">Each site migrates in its own process, side by side, with its own log.</p></section>`;
+  const ready = b && (S.benchSite || S.benchNew || (S.benchMigrate && migrateList().length));
   const newSite = !b || !S.benchNew ? '' : `<section class="card"><h2>New site</h2><div class="grid2">
       ${field('Site name', 'site', { mono: true, value: S.site, hint: 'Chrome and Firefox open a name ending in .localhost without a hosts entry; Safari needs one in /etc/hosts' })}
       ${field('Database name <span class="hint">(optional)</span>', 'db', { mono: true, value: S.db, placeholder: 'Leave empty to let bench choose' })}
       ${field('Administrator password', 'pw', { type: 'password', value: S.pw, hint: 'Set on the restored site, replacing the one from the backup' })}
       ${field('MariaDB root password', 'rootPw', { type: 'password', value: S.rootPw, hint: 'Needed to create the new database' })}
     </div>${restoreFields()}</section>`;
-  const view = `<div class="head"><h1>Project</h1><p class="lead">Load a bench that already exists, then pick a site to add apps to, or add a new site from a backup.</p></div>
+  const view = `<div class="head"><h1>Project</h1><p class="lead">Load a bench that already exists, then pick a site to add apps to, add a new site from a backup, or migrate several sites at once.</p></div>
     ${modeCard()}
     <section class="card"><h2>Existing bench</h2><div class="grid2 end">
       ${field('Bench folder', 'benchFolder', { mono: true, value: S.benchFolder, placeholder: '~/frappe-bench', hint: 'The folder that holds apps/ and sites/' })}
@@ -189,9 +229,9 @@ function viewExisting() {
     ${b ? `<p class="lead small">Frappe <strong>${esc(S.catalog.frappe_versions[b.version].title)}</strong> · Node ${esc(b.node || profile().node)} · apps in the bench: <span class="mono">${esc(b.apps.join(', '))}</span></p>` : ''}</section>
     ${b ? `<section class="card"><h2>Site</h2><div class="grid2" role="radiogroup" aria-label="Site">${sites}</div>
       ${S.errors.benchSite ? `<span class="err">${esc(S.errors.benchSite)}</span>` : ''}</section>` : ''}
-    ${newSite}`;
+    ${newSite}${migrate}`;
   const footer = `<div class="live"></div>
-    <div class="right"><button class="btn primary" data-act="next" ${b && (S.benchSite || S.benchNew) ? '' : 'disabled'}>Continue to apps ${ARROW}</button></div>`;
+    <div class="right"><button class="btn primary" data-act="next" ${ready ? '' : 'disabled'}>Continue to ${S.benchMigrate ? 'review' : 'apps'} ${ARROW}</button></div>`;
   return [view, footer];
 }
 
@@ -265,7 +305,7 @@ function viewCheck() {
     return `<tr><td><strong>${esc(r.title)}</strong>${r.note ? `<div class="sub">${esc(r.note)}</div>` : ''}
       ${log ? `<details ${r.status !== 'ok' ? 'open' : ''}><summary class="sub">Install log</summary><pre>${esc(log)}</pre></details>` : ''}</td>
       <td class="mono">${esc(r.required)}</td><td class="mono">${esc(r.found) || '<span style="color:var(--muted)">—</span>'}</td>
-      <td><span class="st ${status}">${status === 'installing' ? '<span class="spin"></span>' : '●'} ${STATUS[status]}</span></td></tr>`;
+      <td><span class="st ${status}">${status === 'installing' ? '<span class="spin"></span>' : '<i class="pip"></i>'} ${STATUS[status]}</span></td></tr>`;
   }).join('')}</tbody></table></div>`;
   const missing = bad.filter((r) => r.status === 'missing').length;
   const fix = bad.length - missing;
@@ -294,7 +334,7 @@ function viewCheck() {
   const ready = rows.length && !bad.length && S.rootOk === true;
   const view = `<div class="head"><h1>System check</h1><p class="lead">Prerequisites for Frappe <strong>${esc(profile().title)}</strong> on this machine. Only failing items are installed.</p></div>
     <section class="card flush">${table}</section>${install}${root}`;
-  const footer = `<button class="btn" data-act="back">← Back</button>
+  const footer = `<button class="btn" data-act="back">${BACK_LABEL}</button>
     <div class="right"><button class="btn" data-act="recheck" ${S.checking || S.installing ? 'disabled' : ''}>Re-check</button>
     <span class="lead small">${ready ? '' : 'Continue unlocks once every row is OK and the root password is verified'}</span>
     <button class="btn primary" data-act="next" ${ready ? '' : 'disabled'}>Continue to apps ${ARROW}</button></div>`;
@@ -326,7 +366,7 @@ function viewApps() {
           ${a.custom ? `<button class="btn sm" data-act="remove-custom" data-arg="${esc(name)}">Remove</button>` : ''}</div>
       </div></div>`;
   }).join('');
-  const add = `<div class="app add"><div class="t">+ Add a custom app</div>
+  const add = `<div class="app add"><div class="t">${icon('add', 20)}Add a custom app</div>
     ${field('Git URL', 'custom.repo', { mono: true, value: S.custom.repo, placeholder: 'https://github.com/org/app.git or git@github.com:org/app.git' })}
     ${field('Branch', 'custom.branch', { mono: true, value: S.custom.branch, placeholder: S.version })}
     ${S.customMsg ? `<span class="err">${esc(S.customMsg)}</span>` : '<span class="hint">The app name and what it requires are read from the repository.</span>'}
@@ -348,11 +388,166 @@ function viewApps() {
   const view = `<div class="head"><h1>Apps</h1><p class="lead">${intro}
     Selecting an app also selects what it requires. The install order is worked out from each app's own requirements on the next screen.</p>
     ${S.catalog.github_ssh_host ? `<p class="lead small">GitHub repositories are fetched with the SSH key of <span class="mono">${esc(S.catalog.github_ssh_host)}</span> from <span class="mono">~/.ssh/config</span>, set in <span class="mono">~/.config/bench-wizard/settings.json</span>.</p>` : ''}</div>
-    ${warn}<div class="grid2">${cards}${add}</div>${extensionCard()}${importCard}`;
-  const footer = `<button class="btn" data-act="back">← Back</button><div class="right">
+    ${warn}<div class="grid2">${cards}${add}</div>${marketCard()}${extensionCard()}${importCard}`;
+  const footer = `<button class="btn" data-act="back">${BACK_LABEL}</button><div class="right">
     <span class="lead small">${names.length} app${names.length === 1 ? '' : 's'} selected: ${esc(names.join(', '))}</span>
     <button class="btn primary" data-act="next">Continue to review ${ARROW}</button></div>`;
   return [view, footer];
+}
+
+function marketCard() {
+  const m = S.mp;
+  const listed = m && m.versions.includes(S.version);
+  const found = !m ? '' : `<div class="app sel"><div class="body">
+      <div class="t">${esc(m.title || m.name)} <span class="badge ${m.free ? 'green' : 'amber'}">${m.free ? 'Free' : 'Paid'}</span>
+        ${m.versions.map((v) => `<span class="badge ${v === S.version ? 'blue' : ''}">${esc(S.catalog.frappe_versions[v] ? S.catalog.frappe_versions[v].title : v.replace('version-', 'Version '))}</span>`).join(' ')}
+        ${m.nightly ? '<span class="badge">Nightly</span>' : ''}</div>
+      ${listed ? '' : `<div class="note">${INFO}<span>The marketplace does not list this app for Frappe <strong>${esc(profile().title)}</strong>. It may still install from a branch that supports it.</span></div>`}
+      ${m.free ? '' : `<div class="note">${INFO}<span>A paid app on Frappe Cloud. Its repository may be private; adding it works only if your Git account can read it.</span></div>`}
+      ${m.repo ? `<div class="repo mono">${esc(m.repo)}</div>` : '<span class="err">Its marketplace page links no GitHub repository, so it cannot be fetched from here.</span>'}
+      ${m.branches.length ? `<div class="br"><span style="color:var(--muted)">Branch</span>
+          <select class="in sm" data-bind="mpBranch" aria-label="Branch of ${esc(m.name)}">${m.branches.map((b) => `<option ${b === S.mpBranch ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select>
+          <button class="btn sm primary" data-act="mp-add" ${S.customBusy ? 'disabled' : ''}>${S.customBusy ? '<span class="spin"></span> Reading repository…' : 'Add app'}</button></div>`
+        : m.repo ? `<span class="err">Cannot list its branches: ${esc(m.branch_error || 'the repository has none')}</span>` : ''}
+      ${S.customMsg ? `<span class="err">${esc(S.customMsg)}</span>` : ''}</div></div>`;
+  return `<section class="card"><div class="row"><h2>Frappe Cloud Marketplace</h2><span class="lead small">${S.mpApps ? S.mpApps.length + ' published apps' : ''}</span></div>
+    <div class="grid2 end">
+      <label class="f"><span>App</span><input class="in" data-bind="mpQuery" list="mp-list" value="${esc(S.mpQuery)}" placeholder="${S.mpApps ? 'Type to search, e.g. HRMS' : 'Loading the marketplace…'}" autocomplete="off" spellcheck="false"></label>
+      <div><button class="btn" data-act="mp-lookup" ${S.mpBusy || !S.mpApps ? 'disabled' : ''}>${S.mpBusy ? '<span class="spin"></span> Looking up…' : 'Look up'}</button></div>
+    </div>
+    <datalist id="mp-list">${(S.mpApps || []).map((a) => `<option value="${esc(a.title)}"></option>`).join('')}</datalist>
+    ${S.mpMsg ? `<span class="err">${esc(S.mpMsg)}</span>` : '<span class="hint">Repository, supported versions and price come from the app\'s public marketplace page; its branches from the repository.</span>'}
+    ${found}</section>`;
+}
+
+async function loadMarket() {
+  if (S.mpApps) return;
+  try { S.mpApps = (await api('GET', '/api/marketplace')).apps; S.mpMsg = ''; } catch (err) { S.mpMsg = err.message; }
+  if (S.step === 'apps') render();
+}
+
+async function lookupMarket() {
+  const q = S.mpQuery.trim().toLowerCase();
+  const app = (S.mpApps || []).find((a) => a.title.toLowerCase() === q || a.name.toLowerCase() === q);
+  if (!app) { S.mpMsg = 'Pick an app from the list'; return render(); }
+  S.mpBusy = true; S.mpMsg = ''; S.mp = null; S.customMsg = ''; render();
+  try {
+    const res = await api('POST', '/api/marketplace/app', { name: app.name, version: S.version });
+    if (res.ok) { S.mp = Object.assign(res, { title: app.title }); S.mpBranch = res.branches[0] || ''; } else S.mpMsg = res.error;
+  } catch (err) { S.mpMsg = err.message; }
+  S.mpBusy = false; render();
+}
+
+// ---------------------------------------------------------------- projects (every bench on this machine)
+const gb = (n) => (n / 1024 ** 3).toFixed(1) + ' GB';
+const PORT_COLS = [['webserver_port', 'Web'], ['socketio_port', 'Socket.IO'], ['file_watcher_port', 'Watcher'], ['redis_cache', 'Redis cache'], ['redis_queue', 'Redis queue']];
+
+function viewProjects() {
+  const p = S.proj;
+  const head = `<div class="head"><h1>Projects</h1><p class="lead">Every bench under your home folder, and any you added. Migrate or build a site, and give each bench ports of its own so several can run at once.</p></div>`;
+  const footer = `<span class="lead small">${p ? p.benches.length + (p.benches.length === 1 ? ' bench' : ' benches') : ''}</span><div class="right"><button class="btn" data-act="projects" ${S.projBusy ? 'disabled' : ''}>${icon('refresh', 18)}Refresh</button></div>`;
+  if (!p) return [head + `<p class="lead">${S.projMsg ? esc(S.projMsg) : '<span class="spin"></span> Looking for benches…'}</p>`, footer];
+  const r = p.resources;
+  const running = p.benches.filter((b) => b.running);
+  const held = running.reduce((sum, b) => sum + (b.rss || 0), 0);
+  const LOW = { memory: 2 * 1024 ** 3, disk: 10 * 1024 ** 3 };  // projects.LOW_MEMORY and LOW_DISK
+  const stat = (ic, label, value, used, low) => `<div class="stat"><span class="si">${icon(ic, 22)}</span><div>
+      <div class="k">${label}</div><div class="v">${value}</div>
+      ${used == null ? '' : `<div class="meter ${low ? 'low' : ''}" role="img" aria-label="${Math.round(used * 100)}% in use"><i style="width:${Math.round(used * 100)}%"></i></div>`}</div></div>`;
+  const res = `<section class="card"><h2>This machine</h2><div class="stats">
+      ${stat('memory', 'Memory free', r.memory ? `${gb(r.memory.available)} <small>of ${gb(r.memory.total)}</small>` : 'unknown',
+    r.memory && 1 - r.memory.available / r.memory.total, r.memory && r.memory.available < LOW.memory)}
+      ${stat('storage', 'Disk free', `${gb(r.disk.free)} <small>of ${gb(r.disk.total)}</small>`, 1 - r.disk.free / r.disk.total, r.disk.free < LOW.disk)}
+      ${stat('dns', 'Benches running', p.running == null ? 'cannot tell here' : `${p.running}${held ? ` <small>using ${gb(held)}</small>` : ''}`)}
+    </div>${r.warnings.map((w) => `<div class="note bad">${INFO}<span>${esc(w)}</span></div>`).join('')}</section>`;
+  const clashing = p.benches.filter((b) => b.clashes.length).length;
+  const edits = Object.keys(S.portEdits).length;
+  const shown = S.projFilter === 'running' ? running : p.benches;
+  const rows = shown.map((b) => {
+    const e = S.portEdits[b.folder] || {};
+    const site = S.projSite[b.folder] || '';
+    const busy = S.projBusy === b.folder;
+    return `<tr><td><div class="bench"><span class="av ${b.running ? 'on' : ''}">${icon('dns')}</span><div class="nm">${esc(tilde(b.folder))}
+        <div class="sub">${esc(b.version_title)}${b.running ? `<span class="state-on"><i class="pip"></i>Running${b.rss ? ', ' + gb(b.rss) : ''}</span>` : ''}</div></div></div></td>
+      <td><select class="in sm" data-projsite="${esc(b.folder)}" aria-label="Site of ${esc(tilde(b.folder))}" ${b.sites.length ? '' : 'disabled'}>
+        ${b.sites.length ? `<option value="">All sites (${b.sites.length})</option>` + b.sites.map((n) => `<option ${n === site ? 'selected' : ''}>${esc(n)}</option>`).join('') : '<option>no sites</option>'}</select></td>
+      <td class="acts">${b.running ? `<button class="btn sm stop" data-act="proj-stop" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''}>${icon('stop', 18)}Stop</button>`
+    : `<button class="btn sm tonal" data-act="proj-start" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''}>${icon('play_arrow', 18)}Start</button>`}
+        <button class="btn sm" data-act="proj-migrate" data-arg="${esc(b.folder)}" ${busy || !b.sites.length ? 'disabled' : ''}>${icon('sync', 18)}Migrate</button>
+        <button class="btn sm" data-act="proj-build" data-arg="${esc(b.folder)}" ${busy ? 'disabled' : ''}>${icon('build', 18)}Build</button></td>
+      ${PORT_COLS.map(([key]) => {
+    const value = e[key] != null ? e[key] : b.ports[key];
+    const cls = e[key] != null && e[key] !== b.ports[key] ? 'changed' : b.clashes.includes(b.ports[key]) ? 'bad' : '';
+    return `<td><input class="in sm port mono ${cls}" data-port="${esc(b.folder)}" data-key="${key}" value="${esc(value)}" inputmode="numeric" aria-label="${key} of ${esc(tilde(b.folder))}"></td>`;
+  }).join('')}</tr>`;
+  }).join('');
+  const table = `<section class="card flush"><div class="loghead"><h2>Benches and ports</h2>
+      <span class="lead small">${clashing ? `<span class="err">${clashing} benches share ports with another, so only one of them can run at a time.</span>` : 'No two benches share a port.'}</span>
+      <div class="right"><button class="btn sm" data-act="ports-auto" ${clashing ? '' : 'disabled'}>${icon('auto_awesome', 18)}Auto-allocate ports</button>
+      <button class="btn sm primary" data-act="ports-apply" id="ports-apply" ${edits ? '' : 'disabled'}>${icon('check', 18)}Apply port changes${edits ? ` (${edits})` : ''}</button></div></div>
+    ${S.projNote ? `<div class="note info" style="margin:0 16px 12px">${INFO}<span>${esc(S.projNote)}</span></div>` : ''}
+    <div class="filters" role="group" aria-label="Show benches">
+      <button class="fchip" aria-pressed="${S.projFilter === 'all'}" data-act="proj-filter" data-arg="all">${S.projFilter === 'all' ? icon('check', 18) : ''}All <span>${p.benches.length}</span></button>
+      <button class="fchip" aria-pressed="${S.projFilter === 'running'}" data-act="proj-filter" data-arg="running" ${p.running == null ? 'disabled title="This system cannot tell which benches are running"' : ''}>${S.projFilter === 'running' ? icon('check', 18) : ''}<i class="pip on"></i>Running <span>${running.length}</span></button>
+    </div>
+    <div style="overflow-x:auto"><table class="tbl proj"><thead><tr><th>Bench</th><th>Site</th><th></th>${PORT_COLS.map(([, l]) => `<th>${l}</th>`).join('')}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="8" class="sub">${S.projFilter === 'running' ? 'No bench is running. Show all benches and press Start on one.' : 'No benches found under your home folder. Add one below.'}</td></tr>`}</tbody></table></div>
+    <p class="lead small" style="padding:0 16px 16px">New ports take effect the next time the bench starts; a running bench keeps its old ports until then. Highlighted ports are shared with another bench.</p></section>`;
+  const add = `<section class="card"><h2>Add a bench</h2><div class="grid2 end">
+      ${field('Bench folder', 'addFolder', { mono: true, value: S.addFolder, placeholder: '/srv/benches/client-bench', hint: 'For a bench outside your home folder, or deeper than three folders in it' })}
+      <div><button class="btn" data-act="proj-add">${icon('create_new_folder', 18)}Add bench</button></div></div></section>`;
+  return [head + (S.projMsg ? `<div class="note bad">${INFO}<span style="white-space:pre-wrap">${esc(S.projMsg)}</span></div>` : '') + res + table + add, footer];
+}
+
+async function loadProjects() {
+  S.projBusy = 'all'; S.projMsg = ''; render();
+  try { S.proj = await api('GET', '/api/projects'); } catch (err) { S.projMsg = err.message; }
+  S.projBusy = ''; if (S.step === 'projects') render();
+}
+
+// Plan, then start at once: these steps change nothing a user would want to review first.
+async function startQuick(body, folder) {
+  S.projBusy = folder; S.projMsg = ''; render();
+  try {
+    const plan = await api('POST', '/api/plan', body);
+    if (!plan.ok) throw new Error(plan.checks.filter((c) => !c.ok).map((c) => c.label).join('; '));
+    const res = await api('POST', '/api/run', {});
+    S.projBusy = '';
+    S.wizStep = S.wizStep || 'project';
+    attachRun(res.run_id); refreshRuns();
+    return res;
+  } catch (err) { S.projMsg = (folder ? tilde(folder) + ': ' : '') + err.message; S.projBusy = ''; render(); }
+  return null;
+}
+
+// Start or stop a bench; `bench start` runs apart from the wizard, so it outlives it.
+async function benchPower(folder, what) {
+  S.projBusy = folder; S.projMsg = ''; S.projNote = `${what === 'start' ? 'Starting' : 'Stopping'} ${tilde(folder)}…`; render();
+  try {
+    const res = await api('POST', '/api/bench/' + what, { folder });
+    S.projNote = what === 'stop' ? `${tilde(folder)} stopped.`
+      : `${tilde(folder)} is running, web on port ${res.port}. It keeps running after you close the wizard; its output is in ${tilde(res.log)}.`;
+    loadProjects();
+  } catch (err) { S.projNote = ''; S.projMsg = tilde(folder) + ': ' + err.message; S.projBusy = ''; render(); }
+}
+
+async function applyPorts() {
+  const folders = Object.keys(S.portEdits);
+  const problems = [];
+  for (const folder of folders) {
+    const bench = S.proj.benches.find((b) => b.folder === folder);
+    const ports = Object.assign({}, bench.ports, S.portEdits[folder]);
+    try {
+      const plan = await api('POST', '/api/plan', { folder, ports });
+      if (!plan.ok) throw new Error('pre-flight checks failed');
+      await api('POST', '/api/run', {});
+      delete S.portEdits[folder];
+    } catch (err) { problems.push(tilde(folder) + ': ' + err.message); }
+  }
+  refreshRuns();
+  S.projMsg = problems.join(' · ');
+  S.projNote = folders.length > problems.length ? `Started ${folders.length - problems.length} port change${folders.length - problems.length === 1 ? '' : 's'}; follow them under Runs. Restart each bench for its new ports to apply, then press Refresh.` : '';
+  render();
 }
 
 // Which browser this page is in, and its extensions page (pages cannot open that address themselves).
@@ -410,7 +605,7 @@ async function pollExtension() {
 }
 
 function viewReview() {
-  const back = '<button class="btn" data-act="back">← Back</button>';
+  const back = `<button class="btn" data-act="back">${BACK_LABEL}</button>`;
   if (S.planning) return ['<div class="head"><h1>Review</h1><p class="lead"><span class="spin"></span> Reading each app\'s requirements and running pre-flight checks…</p></div>', back];
   if (!S.plan) return [`<div class="head"><h1>Review</h1></div><div class="note bad">${INFO}<span>${esc(S.planMsg || 'Could not build the plan.')}</span></div>`,
     back + '<div class="right"><button class="btn" data-act="replan">Try again</button></div>'];
@@ -421,27 +616,27 @@ function viewReview() {
   const view = `<div class="head"><h1>Review</h1><p class="lead">This is exactly what will run. Go back to change anything; nothing is written until you start.</p></div>
     <section class="card"><div class="row"><h2>Summary</h2><a href="#" data-act="goto" data-arg="project" class="small">Edit project</a></div><div class="kv">
       <div><div class="k">Frappe version</div><div class="v">${esc(p.version_title)} · Python ${esc(p.python)} · Node ${esc(p.node)}</div></div>
-      ${p.existing ? `<div><div class="k">Bench</div><div class="v">${p.restore ? 'Existing; a new site is added from the backup' : 'Existing; apps are added, nothing is removed'}</div></div>`
+      ${p.existing ? `<div><div class="k">Bench</div><div class="v">${p.migrate ? 'Existing; the sites are migrated side by side' : p.restore ? 'Existing; a new site is added from the backup' : 'Existing; apps are added, nothing is removed'}</div></div>`
         : `<div><div class="k">Preset</div><div class="v">${esc(S.catalog.presets[S.preset].title)}</div></div>`}
       <div><div class="k">Bench folder</div><div class="v mono">${esc(tilde(p.folder))}</div></div>
-      <div><div class="k">Site</div><div class="v mono">${esc(p.site)}</div></div>
+      <div><div class="k">${p.migrate ? 'Sites' : 'Site'}</div><div class="v mono">${esc(p.site)}</div></div>
       ${p.existing && !p.restore ? '' : `<div><div class="k">Database</div><div class="v mono">${S.db ? esc(S.db) : '<span style="color:var(--muted)">chosen by bench</span>'}</div></div>
       <div><div class="k">Site data</div><div class="v">${p.restore ? 'Restored from <span class="mono">' + esc(S.restore.sql) + '</span>' : 'New empty site'}</div></div>`}
-      <div class="full"><div class="k">${p.existing && !p.restore ? 'Apps to add, in install order' : 'Apps, in install order'}</div><div class="v mono">${esc(order)}</div>${added ? `<div class="v">${added}</div>` : ''}</div>
+      ${p.migrate ? '' : `<div class="full"><div class="k">${p.existing && !p.restore ? 'Apps to add, in install order' : 'Apps, in install order'}</div><div class="v mono">${esc(order)}</div>${added ? `<div class="v">${added}</div>` : ''}</div>`}
     </div></section>
     ${p.notices.length ? `<div class="note info">${INFO}<span>${p.notices.map(esc).join('<br>')}</span></div>` : ''}
     <section class="card"><div class="row"><h2>Pre-flight checks</h2><span class="badge ${p.ok ? 'green' : 'red'}">${passed} of ${p.checks.length} passed</span></div>
-      <div class="chk">${p.checks.map((c) => `<div class="crow"><span class="dotc ${c.ok ? 'ok' : 'fail'}">${c.ok ? '✓' : '!'}</span><span>${esc(c.label)}</span></div>`).join('')}</div></section>
+      <div class="chk">${p.checks.map((c) => `<div class="crow"><span class="dotc ${c.ok ? 'ok' : 'fail'}">${icon(c.ok ? 'check' : 'priority_high', 16)}</span><span>${esc(c.label)}</span></div>`).join('')}</div></section>
     <section class="card"><div class="row"><h2>Commands</h2><span class="lead small">Secrets shown as ••••</span></div>
       <div class="cmd">${p.steps.map((s, i) => `<span class="n">${i + 1}</span>${esc(s.command)}`).join('\n')}</div>
       <p class="lead small">The bench's own Redis is started for the site steps and stopped when the run ends. Every step after the first runs inside the bench folder with the nvm Node ${esc(p.node)} <span class="mono">bin</span> and <span class="mono">~/.local/bin</span> on PATH.</p></section>`;
   const footer = back + `<div class="right"><button class="btn" data-act="replan">Re-run checks</button>
     <span class="lead small">${p.ok ? '' : 'Disabled while any pre-flight check fails'}${esc(S.runMsg)}</span>
-    <button class="btn go" data-act="start" ${p.ok ? '' : 'disabled'}>▶ Start setup</button></div>`;
+    <button class="btn go" data-act="start" ${p.ok ? '' : 'disabled'}>${icon('play_arrow', 18)}${p.migrate ? 'Start migrate' : 'Start setup'}</button></div>`;
   return [view, footer];
 }
 
-const ICON = { done: '✓', failed: '!', running: '<span class="spin"></span>' };
+const ICON = { done: icon('check', 16), failed: icon('priority_high', 16), running: '<span class="spin"></span>' };
 
 function viewRun() {
   const r = S.run;
@@ -454,7 +649,11 @@ function viewRun() {
   const list = steps.map((s, i) => `<button class="srow ${s.id === active.id ? 'active' : ''} ${s.state}" data-act="show-step" data-arg="${esc(s.id)}">
     <span class="ic ${s.state}">${ICON[s.state] || i + 1}</span><span class="t">${esc(s.title)}</span><span class="dur">${duration(s.duration)}</span></button>`).join('');
   let fail = '';
-  if (r.state === 'failed' && failedStep) {
+  if (r.state === 'failed' && failedStep && r.parallel) {
+    const failed = steps.filter((s) => s.state === 'failed');
+    fail = `<div class="fail">${INFO}<div class="msg"><strong>${esc(failed.map((s) => s.title).join(', '))} failed.</strong> The steps that finished stay done.</div>
+      <button class="btn primary" data-act="retry">Retry failed</button><button class="btn danger" data-act="abandon">Stop here</button></div>`;
+  } else if (r.state === 'failed' && failedStep) {
     const n = steps.indexOf(failedStep) + 1;
     const cleanup = !failedStep.cleanup ? '' : failedStep.cleanup_required
       ? `Retrying first runs <span class="mono">${esc(failedStep.cleanup)}</span>, because this step cannot run over a partial result.`
@@ -463,16 +662,21 @@ function viewRun() {
       ${failedStep.cleanup && !failedStep.cleanup_required ? `<label class="tog"><input type="checkbox" data-check="cleanup" ${S.cleanup ? 'checked' : ''}>Run cleanup first</label>` : ''}
       <button class="btn primary" data-act="retry">Retry step ${n}</button><button class="btn danger" data-act="abandon">Stop here</button></div>`;
   } else if (r.state === 'cancelled') {
-    fail = r.summary.existing && r.summary.restore ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> The site <span class="mono">${esc(r.summary.site)}</span> may be partly created. Remove it with <span class="mono">bench drop-site ${esc(r.summary.site)}</span> before trying again; the rest of the bench is untouched.</div>
+    fail = r.summary.migrate ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> A site stopped in the middle of a migrate may be left in maintenance mode: migrate it again, or run <span class="mono">bench --site SITE set-maintenance-mode off</span>.</div>
+      <button class="btn" data-act="restart">Start again</button></div>`
+      : r.summary.existing && r.summary.restore ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> The site <span class="mono">${esc(r.summary.site)}</span> may be partly created. Remove it with <span class="mono">bench drop-site ${esc(r.summary.site)}</span> before trying again; the rest of the bench is untouched.</div>
       <button class="btn" data-act="restart">Start again</button></div>`
       : r.summary.existing ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> Apps fetched or installed so far stay in the bench; running the same plan again skips what is already installed on the site.</div>
       <button class="btn" data-act="restart">Start again</button></div>`
       : `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> What was created so far is still on disk: the bench folder <span class="mono">${esc(tilde(r.summary.folder))}</span>${steps.some((s) => s.id === 'new-site' && s.state !== 'waiting') ? ' and possibly the site ' + esc(r.summary.site) : ''}. Remove them before setting up the same project again.</div>
       <button class="btn" data-act="restart">Set up another bench</button></div>`;
   }
-  const view = `<div class="row" style="align-items:flex-end"><div class="head"><h1>${r.summary.existing && !r.summary.restore ? 'Adding apps to' : 'Setting up'} ${esc(r.summary.site)}</h1>
+  const title = r.summary.title && !r.summary.migrate ? esc(r.summary.title) + ': ' + esc(tilde(r.summary.folder))
+    : r.summary.migrate ? `Migrating ${r.summary.migrate.length === 1 ? esc(r.summary.site) : r.summary.migrate.length + ' sites'}`
+    : `${r.summary.existing && !r.summary.restore ? 'Adding apps to' : 'Setting up'} ${esc(r.summary.site)}`;
+  const view = `<div class="row" style="align-items:flex-end"><div class="head"><h1>${title}</h1>
       <p class="lead">Run <span class="mono">${esc(r.run_id)}</span> · ${doneCount} of ${steps.length} steps done · ${duration(elapsed)} elapsed</p></div>
-      <span class="badge ${pill[0]}">● ${esc(pill[1])}</span></div>
+      <span class="badge ${pill[0]}"><i class="pip"></i>${esc(pill[1])}</span></div>
     <div class="split"><div class="card flush list"><div class="loghead"><h2>Steps</h2></div>${list}</div>
       <div class="card flush logp"><div class="loghead"><span class="mono c">${esc(active.command)}</span>
         <label class="tog small"><input type="checkbox" data-check="follow" ${S.follow ? 'checked' : ''}>Follow output</label>
@@ -497,13 +701,30 @@ function viewDone() {
   const s = r.summary;
   const folder = tilde(s.folder);
   const total = r.steps.reduce((sum, st) => sum + (st.duration || 0), 0);
+  const pw = S.pwFor[r.run_id];
+  const footer = `<span class="lead small">Logs: <span class="mono">${esc(tilde(r.log_dir))}</span></span>
+    <div class="right"><button class="btn" data-act="restart">Set up another bench</button></div>`;
+  if (s.migrate) {
+    const longest = Math.max(0, ...r.steps.map((st) => st.duration || 0));
+    return [`<div class="hero"><div class="okc">${CHECK_BIG}</div>
+      <div><h1>Sites migrated</h1><p>${s.migrate.length} site${s.migrate.length === 1 ? '' : 's'} in <span class="mono">${esc(folder)}</span> migrated side by side in ${duration(longest)}.</p></div></div>
+      <section class="card"><h2>Sites</h2><div class="chips">${r.steps.map((st) => `<span class="chip">${esc(st.title.replace(/^migrate /, ''))} <span class="b">${duration(st.duration)}</span></span>`).join('')}</div></section>
+      <section class="card"><h2>Start the bench</h2>${cmdline(`cd ${folder} && nvm use && bench start`)}</section>`, footer];
+  }
+  if (s.title) {
+    return [`<div class="hero"><div class="okc">${CHECK_BIG}</div>
+      <div><h1>${esc(s.title)}: done</h1><p><span class="mono">${esc(folder)}</span> in ${duration(total)}.</p></div></div>
+      ${s.ports ? `<div class="note info">${INFO}<span>The bench uses the new ports the next time it starts. Its sites then open on port <strong>${esc(s.ports.webserver_port)}</strong>, for example <span class="mono">http://localhost:${esc(s.ports.webserver_port)}</span>.</span></div>` : ''}
+      <section class="card"><h2>Start the bench</h2>${cmdline(`cd ${folder} && nvm use && bench start`)}</section>`, footer];
+  }
   const addOnly = s.existing && !s.restore;
-  const url = s.existing ? `http://${s.site}:8000` : 'http://localhost:8000';
+  const port = s.ports ? s.ports.webserver_port : 8000;
+  const url = s.existing ? `http://${s.site}:${port}` : `http://localhost:${port}`;
   const restore = !s.restore || !(s.restore.mute_emails || s.restore.pause_scheduler || s.restore.sanitize) ? '' : `<section class="card"><h2>Restored copy: safety switches</h2>
     <div class="note">${INFO}<span>This site was restored from a backup. ${s.restore.mute_emails ? '<strong>Outgoing email is muted.</strong> ' : ''}${s.restore.pause_scheduler ? '<strong>The scheduler is paused.</strong> ' : ''}${s.restore.sanitize ? '<strong>Email that was waiting to be sent is marked Error, and incoming mail, webhooks and SMS or Slack alerts are switched off.</strong> ' : ''}Turn them back on only if this copy should really send email and run jobs.</span></div>
     ${s.restore.mute_emails ? cmdline(`cd ${folder} && bench --site ${s.site} set-config mute_emails 0`) : ''}
     ${s.restore.pause_scheduler ? cmdline(`cd ${folder} && bench --site ${s.site} set-config pause_scheduler 0`) : ''}</section>`;
-  const view = `<div class="hero"><div class="okc"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg></div>
+  const view = `<div class="hero"><div class="okc">${CHECK_BIG}</div>
       <div><h1>Bench ready</h1><p>${esc(s.site)} was ${addOnly ? 'updated' : 'set up'} in ${duration(total)}. ${r.steps.length} steps ran; nothing is running yet.</p></div></div>
     <section class="card"><h2>Start the bench</h2>
       ${S.toolsInstalled ? `<div class="note">${INFO}<span><strong>Open a new terminal first.</strong> Tools were installed in this session and are only on PATH in a fresh shell.</span></div>` : ''}
@@ -513,7 +734,7 @@ function viewDone() {
       <div><div class="k">URL</div><div class="v"><a href="${esc(url)}" target="_blank" rel="noopener" class="mono">${esc(url)}</a></div></div>
       <div><div class="k">Site name</div><div class="v mono">${esc(s.site)}</div></div>
       <div><div class="k">Login</div><div class="v mono">Administrator</div></div>
-      <div><div class="k">Password</div><div class="v mono">${addOnly ? 'unchanged' : S.pw ? (S.showPw ? esc(S.pw) : '••••') + ` <a href="#" data-act="toggle-pw" class="small" style="font-family:var(--sans)">${S.showPw ? 'Hide' : 'Show'}</a>` : 'the one you entered in step 1'}</div></div>
+      <div><div class="k">Password</div><div class="v mono">${addOnly ? 'unchanged' : pw ? (S.showPw ? esc(pw) : '••••') + ` <a href="#" data-act="toggle-pw" class="small" style="font-family:var(--sans)">${S.showPw ? 'Hide' : 'Show'}</a>` : 'the one you entered in step 1'}</div></div>
       <div><div class="k">Bench folder</div><div class="v mono">${esc(folder)}</div></div>
       <div><div class="k">Developer mode</div><div class="v">${s.existing ? 'unchanged' : 'On'}</div></div></div></section>
     ${restore}
@@ -522,12 +743,10 @@ function viewDone() {
     <section class="card"><h2>Update later</h2>${cmdline(`cd ${folder} && nvm use && bench update --pull --build --patch`)}
       ${cmdline(`cd ${tilde(S.catalog.wizard_dir)} && git pull`)}
       <p class="lead small">The first updates the bench and its apps; the second updates Bench Wizard itself, including the shared app catalog.</p></section>`;
-  const footer = `<span class="lead small">Logs: <span class="mono">${esc(tilde(r.log_dir))}</span></span>
-    <div class="right"><button class="btn" data-act="restart">Set up another bench</button></div>`;
   return [view, footer];
 }
 
-const VIEWS = { project: viewProject, check: viewCheck, apps: viewApps, review: viewReview, run: viewRun, done: viewDone };
+const VIEWS = { project: viewProject, check: viewCheck, apps: viewApps, review: viewReview, run: viewRun, done: viewDone, projects: viewProjects };
 
 // ---------------------------------------------------------------- actions
 function validateProject() {
@@ -544,7 +763,7 @@ function validateProject() {
     return !Object.keys(e).length;
   }
   if (S.mode === 'existing') {
-    if (!S.bench || !S.benchSite) e.benchSite = 'Load the bench and pick a site';
+    if (!S.bench || !(S.benchSite || (S.benchMigrate && migrateList().length))) e.benchSite = 'Load the bench and pick a site';
     S.errors = e;
     return !Object.keys(e).length;
   }
@@ -630,7 +849,8 @@ async function loadBench() {
     S.version = S.bench.version;
     const readable = Object.keys(S.bench.sites).filter((n) => S.bench.sites[n].apps);
     S.benchSite = readable.length === 1 ? readable[0] : '';
-    S.benchNew = false;
+    S.benchNew = false; S.benchMigrate = false;
+    S.migrateSites = Object.fromEntries(Object.keys(S.bench.sites).map((n) => [n, true]));
   } catch (err) { S.bench = null; S.benchSite = ''; S.benchMsg = err.message; }
   S.benchBusy = false; render();
 }
@@ -704,7 +924,8 @@ async function buildPlan() {
   S.planning = true; S.plan = null; S.planMsg = ''; S.runMsg = ''; render();
   const apps = selectedApps().filter(([n]) => n !== 'frappe')
     .map(([name, a]) => ({ name, repo: a.repo, branch: a.branch, title: a.title }));
-  const body = isExisting() && S.benchNew ? {
+  const body = isMigrate() ? { migrate: true, folder: S.bench.folder, sites: migrateList() }
+    : isExisting() && S.benchNew ? {
     existing: true, folder: S.bench.folder, site: S.site.trim(), db_name: S.db.trim(), admin_password: S.pw,
     mariadb_root_password: S.rootPw, apps, restore: S.restore,
   } : isExisting() ? { existing: true, folder: S.bench.folder, site: S.benchSite, apps } : {
@@ -716,22 +937,45 @@ async function buildPlan() {
 }
 
 async function startRun() {
-  try { await api('POST', '/api/run', {}); } catch (err) { S.runMsg = ' ' + err.message; return render(); }
-  S.logs = {}; S.follow = true;
-  await attachRun();
+  let res;
+  try { res = await api('POST', '/api/run', {}); } catch (err) { S.runMsg = ' ' + err.message; return render(); }
+  S.pwFor[res.run_id] = S.pw;
+  resetWizard();
+  attachRun(res.run_id);
+  refreshRuns();
+}
+
+// The wizard's answers go back to a fresh start, so the next setup can be planned while this one runs.
+function resetWizard() {
+  Object.assign(S, { plan: null, reached: 0, folderEdited: false, siteEdited: false, appsKey: '', showPw: false, bench: null, benchSite: '', benchNew: false, benchMigrate: false, wizStep: '' });
+  applyPreset(S.preset);
 }
 
 let source = null;
 
-async function attachRun() {
+// Show one run: its steps and logs come from its own event stream.
+function attachRun(id) {
   if (source) source.close();
-  source = new EventSource('/api/run/events?token=' + encodeURIComponent(TOKEN));
+  Object.assign(S, { run: null, logs: {}, follow: true, showPw: false, attaching: true });
+  source = new EventSource('/api/run/events?token=' + encodeURIComponent(TOKEN) + '&run=' + encodeURIComponent(id));
   source.onmessage = (msg) => onEvent(JSON.parse(msg.data));
 }
 
+function detachRun() {
+  if (source) source.close();
+  source = null;
+  S.run = null;
+}
+
+const runQuery = () => 'run=' + encodeURIComponent(S.run.run_id);
+
 async function loadLog(id) {
-  try { S.logs[id] = (await api('GET', '/api/run/log?step=' + encodeURIComponent(id))).log.split('\n').filter((l, i, a) => i < a.length - 1 || l); }
-  catch (err) { S.logs[id] = S.logs[id] || []; }
+  const run = S.run;
+  let lines;
+  try { lines = (await api('GET', '/api/run/log?' + runQuery() + '&step=' + encodeURIComponent(id))).log.split('\n').filter((l, i, a) => i < a.length - 1 || l); }
+  catch (err) { lines = S.logs[id] || []; }
+  if (S.run !== run) return;  // another run was opened meanwhile
+  S.logs[id] = lines;
   if (S.activeStep === id) paintLog();
 }
 
@@ -742,7 +986,10 @@ function onEvent(ev) {
     const focus = ev.steps.find((s) => s.state === 'running') || ev.steps.find((s) => s.id === ev.failed)
       || ev.steps.filter((s) => s.state === 'done').pop() || ev.steps[0];
     S.activeStep = focus.id;
-    if (S.step !== 'done') S.step = 'run';
+    // A run just opened shows its Done screen when finished; a reconnect keeps the screen that is up.
+    if (S.attaching) S.step = ev.state === 'done' ? 'done' : 'run';
+    else if (S.step !== 'done') S.step = 'run';
+    S.attaching = false;
     render();
     loadLog(focus.id);
   } else if (!S.run) {
@@ -774,10 +1021,12 @@ function setPath(path, value) {
 }
 
 function go(step) {
+  if (isMigrate() && (step === 'apps' || step === 'check')) step = 'project';
   S.step = step; S.errors = {}; render(); window.scrollTo(0, 0);
   if (step === 'check') loadChecks(false);
   if (step === 'review') buildPlan();
-  if (step === 'apps') pollExtension();
+  if (step === 'apps') { pollExtension(); loadMarket(); }
+  if (step === 'projects') loadProjects();
 }
 
 const NEXT = { project: 'check', check: 'apps', apps: 'review' };
@@ -789,7 +1038,7 @@ const ACTIONS = {
   next: () => {
     if (S.step === 'project' && !validateProject()) return render();
     if (S.step === 'apps' && S.depWarn) return;
-    go(S.step === 'project' && S.mode === 'existing' ? 'apps' : NEXT[S.step]);
+    go(S.step === 'project' && S.mode === 'existing' ? (S.benchMigrate ? 'review' : 'apps') : NEXT[S.step]);
   },
   version: (arg) => { pickVersion(arg); render(); },
   mode: (arg) => {
@@ -799,8 +1048,9 @@ const ACTIONS = {
     render();
   },
   'load-bench': loadBench,
-  'bench-site': (arg) => { S.benchSite = arg; S.benchNew = false; S.errors = {}; render(); },
-  'bench-new': () => { S.benchNew = true; S.benchSite = ''; S.errors = {}; render(); inspectBackup(); },
+  'bench-site': (arg) => { S.benchSite = arg; S.benchNew = false; S.benchMigrate = false; S.errors = {}; render(); },
+  'bench-new': () => { S.benchNew = true; S.benchSite = ''; S.benchMigrate = false; S.errors = {}; render(); inspectBackup(); },
+  'bench-migrate': () => { S.benchMigrate = true; S.benchNew = false; S.benchSite = ''; S.errors = {}; render(); },
   preset: (arg) => { applyPreset(arg); render(); },
   sitedata: (arg) => { S.siteData = arg; render(); if (arg === 'restore') inspectBackup(); },
   recheck: () => loadChecks(true),
@@ -815,18 +1065,53 @@ const ACTIONS = {
   replan: buildPlan,
   start: startRun,
   'show-step': (arg) => { S.activeStep = arg; S.follow = false; render(); if (!S.logs[arg]) loadLog(arg); },
-  retry: async () => { S.follow = true; try { await api('POST', '/api/run/retry', { cleanup: S.cleanup }); } catch (err) { window.alert(err.message); } },
+  retry: async () => { S.follow = true; try { await api('POST', '/api/run/retry', { run: S.run.run_id, cleanup: S.cleanup }); } catch (err) { window.alert(err.message); } },
   cancel: async () => {
     if (!window.confirm('Cancel the run? The current step is stopped. Whatever was created so far stays on disk.')) return;
-    try { await api('POST', '/api/run/cancel', {}); } catch (err) { window.alert(err.message); }
+    try { await api('POST', '/api/run/cancel', { run: S.run.run_id }); } catch (err) { window.alert(err.message); }
   },
   abandon: () => { S.run.state = 'cancelled'; render(); },
   finish: () => { S.step = 'done'; render(); window.scrollTo(0, 0); },
   restart: async () => {
-    if (source) source.close();
-    try { await api('POST', '/api/run/dismiss', {}); } catch (err) { /* a running run stays */ }
-    Object.assign(S, { run: null, plan: null, logs: {}, step: 'project', reached: 0, folderEdited: false, siteEdited: false, appsKey: '', showPw: false, bench: null, benchSite: '', benchNew: false });
-    applyPreset(S.preset); render();
+    const id = S.run && S.run.run_id;
+    detachRun();
+    try { await api('POST', '/api/run/dismiss', { run: id }); } catch (err) { /* a running run stays */ }
+    resetWizard(); S.step = 'project'; render(); refreshRuns();
+  },
+  'open-run': (arg) => { if (!S.run && S.step !== 'projects') S.wizStep = S.step; attachRun(arg); },
+  projects: () => {
+    if (S.run) detachRun(); else if (S.step !== 'projects') S.wizStep = S.step;
+    go('projects');
+  },
+  'proj-migrate': (arg) => {
+    const bench = S.proj.benches.find((b) => b.folder === arg);
+    startQuick({ migrate: true, folder: arg, sites: S.projSite[arg] ? [S.projSite[arg]] : bench.sites }, arg);
+  },
+  'proj-build': (arg) => startQuick({ build: true, folder: arg }, arg),
+  'proj-filter': (arg) => { S.projFilter = arg; render(); },
+  'proj-start': (arg) => benchPower(arg, 'start'),
+  'proj-stop': (arg) => benchPower(arg, 'stop'),
+  'ports-auto': async () => {
+    try {
+      const moves = (await api('POST', '/api/ports/allocate', {})).moves;
+      for (const [folder, ports] of Object.entries(moves)) S.portEdits[folder] = ports;
+      const n = Object.keys(moves).length;
+      S.projNote = n ? `New ports for ${n} bench${n === 1 ? '' : 'es'} are filled in below; running benches keep theirs. Check them, then Apply.` : 'No bench needs new ports.';
+    } catch (err) { S.projMsg = err.message; }
+    render();
+  },
+  'ports-apply': applyPorts,
+  'proj-add': async () => {
+    try { await api('POST', '/api/projects/add', { folder: S.addFolder.trim() }); S.addFolder = ''; loadProjects(); }
+    catch (err) { S.projMsg = err.message; render(); }
+  },
+  'mp-lookup': lookupMarket,
+  'mp-add': () => { S.custom = { repo: S.mp.repo, branch: S.mpBranch }; addCustom(); },
+  'new-setup': () => { detachRun(); go(S.wizStep || 'project'); S.wizStep = ''; },
+  'dismiss-run': async (arg) => {
+    try { await api('POST', '/api/run/dismiss', { run: arg }); } catch (err) { return window.alert(err.message); }
+    if (S.run && S.run.run_id === arg) ACTIONS['new-setup']();
+    refreshRuns();
   },
   'reveal-extension': async () => {
     try {
@@ -862,6 +1147,16 @@ document.addEventListener('input', (ev) => {
     }
     const live = $('live');
     if (live) live.innerHTML = liveSummary();
+  } else if (el.dataset.port) {
+    const bench = S.proj.benches.find((b) => b.folder === el.dataset.port);
+    const value = /^\d+$/.test(el.value.trim()) ? Number(el.value.trim()) : el.value.trim();
+    const edits = Object.assign({}, S.portEdits[el.dataset.port], { [el.dataset.key]: value });
+    for (const key of Object.keys(edits)) if (edits[key] === bench.ports[key]) delete edits[key];
+    if (Object.keys(edits).length) S.portEdits[el.dataset.port] = edits; else delete S.portEdits[el.dataset.port];
+    el.classList.toggle('changed', value !== bench.ports[el.dataset.key]);
+    const apply = $('ports-apply');  // patched in place: a re-render would take the focus away
+    const n = Object.keys(S.portEdits).length;
+    apply.disabled = !n; apply.textContent = 'Apply port changes' + (n ? ` (${n})` : '');
   } else if (el.dataset.branch) {
     S.apps[el.dataset.branch].branch = el.value.trim();
   }
@@ -870,6 +1165,8 @@ document.addEventListener('input', (ev) => {
 document.addEventListener('change', (ev) => {
   const el = ev.target;
   if (el.dataset.app) toggleApp(el.dataset.app, el.checked);
+  else if (el.dataset.projsite) S.projSite[el.dataset.projsite] = el.value;
+  else if (el.dataset.msite) { S.migrateSites[el.dataset.msite] = el.checked; render(); }
   else if (el.dataset.check) { setPath(el.dataset.check, el.checked); if (el.dataset.check === 'follow' && el.checked) paintLog(); }
   else if (el.dataset.bind === 'restore.sql') inspectBackup();
 });
@@ -879,6 +1176,8 @@ document.addEventListener('keydown', (ev) => {
   if (ev.target.dataset.bind === 'rootPw') verifyRoot();
   if (ev.target.dataset.bind === 'benchFolder') loadBench();
   if (ev.target.dataset.bind.startsWith('custom.')) addCustom();
+  if (ev.target.dataset.bind === 'mpQuery') lookupMarket();
+  if (ev.target.dataset.bind === 'addFolder') ACTIONS['proj-add']();
 });
 
 async function boot() {
@@ -894,13 +1193,142 @@ async function boot() {
   }
   S.version = S.catalog.default_version;
   applyPreset(S.catalog.default_preset);
-  const existing = await api('GET', '/api/run');
-  if (existing.state !== 'none') {
-    if (existing.state === 'done') S.step = 'done';
-    return attachRun();
-  }
+  await refreshRuns();
+  const running = S.runs.find((r) => r.state === 'running');
+  if (running) return attachRun(running.run_id);
   render();
 }
 
+// ---------------------------------------------------------------- runs list (rail)
+const RUN_ICON = { done: icon('check', 18), failed: icon('priority_high', 18), cancelled: icon('priority_high', 18), running: '<span class="spin"></span>' };
+
+function runLabel(s) {
+  return s.title ? s.title.toLowerCase() : s.site;
+}
+
+// Painted on its own, so polling never re-renders (and so never disturbs) the form being filled in.
+function paintRuns() {
+  const el = $('runs');
+  const away = S.run || S.step === 'projects';
+  el.innerHTML = `<div class="rrow ${S.step === 'projects' ? 'current' : ''}"><button class="rbtn" data-act="projects">
+      <span class="ic waiting">${icon('apps', 18)}</span><span class="t"><span>Projects</span><small>All benches, sites and ports</small></span></button></div>`
+    + `<div class="rhead"><span>${S.runs.length ? 'Runs' : ''}</span>${away ? `<button class="btn sm" data-act="new-setup">${icon('add', 18)}New setup</button>` : ''}</div>`
+    + S.runs.map((r) => `<div class="rrow ${S.run && S.run.run_id === r.run_id ? 'current' : ''}">
+      <button class="rbtn" data-act="open-run" data-arg="${esc(r.run_id)}" title="${esc(r.summary.folder)}">
+        <span class="ic ${r.state === 'cancelled' ? 'failed' : esc(r.state)}">${RUN_ICON[r.state] || '<i class="pip"></i>'}</span>
+        <span class="t"><span class="mono">${esc(runLabel(r.summary))}</span><small>${esc(tilde(r.summary.folder))}</small></span></button>
+      ${r.state === 'running' ? '' : `<button class="rx" data-act="dismiss-run" data-arg="${esc(r.run_id)}" aria-label="Remove ${esc(runLabel(r.summary))} from the list">${icon('close')}</button>`}</div>`).join('');
+}
+
+async function refreshRuns() {
+  let res;
+  try { res = await api('GET', '/api/runs'); } catch (err) { return; }
+  const before = JSON.stringify(S.runs.map((r) => [r.run_id, r.state]));
+  S.runs = res.runs;
+  if (JSON.stringify(S.runs.map((r) => [r.run_id, r.state])) !== before) paintRuns();
+}
+
+// ---------------------------------------------------------------- appearance
+// shortcut: the choice is kept in this browser only (localStorage); keep it in state_root if it must follow the user.
+const PALETTES = [['ocean', 'Ocean', 252, 1], ['teal', 'Teal', 195, 1], ['forest', 'Forest', 148, 1], ['violet', 'Violet', 295, 1],
+  ['rose', 'Rose', 12, 1], ['amber', 'Amber', 62, 0.85], ['slate', 'Slate', 250, 0.25]];
+const MODES = [['light', 'Light', 'light_mode'], ['dark', 'Dark', 'dark_mode'], ['system', 'System', 'contrast']];
+const SCENES = [['none', 'None'], ['mountains', 'Mountains'], ['waves', 'Waves'], ['dots', 'Dots'], ['image', 'Photo']];
+const BG_MAX = 2400;  // px on the long side: sharp on a large screen, small enough for browser storage
+const SCENE_SVG = {
+  mountains: '<svg viewBox="0 0 1440 400" preserveAspectRatio="xMidYMax slice"><circle class="sun" cx="1130" cy="120" r="46"/>'
+    + '<path class="l1" d="M0 250L150 160L260 220L410 100L540 200L660 135L790 215L930 85L1070 190L1200 125L1320 195L1440 140V400H0Z"/>'
+    + '<path class="l2" d="M0 300L130 235L270 295L400 215L560 305L700 225L840 290L990 200L1130 280L1270 225L1440 285V400H0Z"/>'
+    + '<path class="l3" d="M0 352C180 300 360 336 540 330S900 300 1080 336S1320 330 1440 320V400H0Z"/></svg>',
+  waves: '<svg viewBox="0 0 1440 400" preserveAspectRatio="xMidYMax slice">'
+    + '<path class="l1" d="M0 210C240 150 480 270 720 210S1200 150 1440 210V400H0Z"/>'
+    + '<path class="l2" d="M0 275C260 235 460 325 720 280S1180 235 1440 285V400H0Z"/>'
+    + '<path class="l3" d="M0 340C300 305 520 370 760 338S1200 318 1440 345V400H0Z"/></svg>',
+};
+const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+const theme = { palette: 'ocean', mode: 'system', scene: 'none', dim: 72 };
+let bgImage = '';  // the user's own background, as a JPEG data URL
+try { Object.assign(theme, JSON.parse(localStorage.getItem('bw-theme') || '{}')); bgImage = localStorage.getItem('bw-bg') || ''; } catch (e) { /* private window: defaults */ }
+
+function applyTheme(animate) {
+  const set = () => {
+    const d = document.documentElement;
+    const scene = theme.scene === 'image' && !bgImage ? 'none' : theme.scene;
+    d.dataset.palette = theme.palette; d.dataset.scene = scene;
+    d.dataset.mode = theme.mode === 'system' ? (darkQuery.matches ? 'dark' : 'light') : theme.mode;
+    d.style.setProperty('--dim', theme.dim + '%');
+    $('scene').innerHTML = SCENE_SVG[scene] || '';
+    $('scene').style.backgroundImage = scene === 'image' ? `url("${bgImage}")` : '';
+    $('tp-photo').style.backgroundImage = bgImage ? `url("${bgImage}")` : '';
+    $('tp-photo').innerHTML = bgImage ? '' : icon('add_photo_alternate', 22);
+    $('tp-image').hidden = scene !== 'image';
+    const now = { palette: theme.palette, mode: theme.mode, scene };
+    document.querySelectorAll('#theme [data-act=theme]').forEach((b) => {
+      const [key, value] = b.dataset.arg.split(':');
+      b.setAttribute(b.getAttribute('role') === 'radio' ? 'aria-checked' : 'aria-pressed', String(now[key] === value));
+    });
+  };
+  // shortcut: the crossfade needs the View Transitions API (Chromium, Safari 18); elsewhere the change is instant.
+  if (animate && document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.startViewTransition(set);
+  else set();
+}
+
+$('theme-btn').innerHTML = icon('palette', 22);
+$('theme').innerHTML = `<div class="tp-h"><h2>Appearance</h2>
+    <button class="iconbtn" popovertarget="theme" popovertargetaction="hide" aria-label="Close">${icon('close')}</button></div>
+  <div><div class="tp-l" id="tp-colour">Colour</div><div class="swatches" role="radiogroup" aria-labelledby="tp-colour">${PALETTES.map(([id, label, h, c]) => `<button class="sw" role="radio" aria-label="${label}" title="${label}" style="--h:${h};--c:${c}" data-act="theme" data-arg="palette:${id}">${icon('check', 18)}</button>`).join('')}</div></div>
+  <div><div class="tp-l">Mode</div><div class="seg">${MODES.map(([id, label, ic]) => `<button data-act="theme" data-arg="mode:${id}">${icon(ic, 18)}${label}</button>`).join('')}</div></div>
+  <div><div class="tp-l">Background</div><div class="scenes">${SCENES.map(([id, label]) => `<button data-act="theme" data-arg="scene:${id}"><span class="thumb ${id}" ${id === 'image' ? 'id="tp-photo"' : ''}>${SCENE_SVG[id] || ''}</span>${label}</button>`).join('')}</div>
+    <div class="tp-image" id="tp-image" hidden>
+      <label class="tp-dim">Dim<input type="range" id="tp-dim" min="45" max="90" value="${theme.dim}" aria-label="Dim the photo so text stays readable"></label>
+      <button class="btn sm" data-act="bg-pick">Change image</button><button class="btn sm danger" data-act="bg-remove">Remove</button>
+    </div>
+    <p class="err" id="tp-msg" role="status"></p>
+    <input type="file" id="tp-file" accept="image/*" hidden></div>`;
+const saveTheme = () => { try { localStorage.setItem('bw-theme', JSON.stringify(theme)); } catch (e) { /* not kept: still applied now */ } };
+ACTIONS.theme = (arg) => {
+  if (arg === 'scene:image' && !bgImage) return $('tp-file').click();
+  const [key, value] = arg.split(':');
+  theme[key] = value;
+  saveTheme();
+  applyTheme(true);
+};
+ACTIONS['bg-pick'] = () => $('tp-file').click();
+ACTIONS['bg-remove'] = () => {
+  bgImage = '';
+  try { localStorage.removeItem('bw-bg'); } catch (e) { /* nothing kept */ }
+  ACTIONS.theme('scene:none');
+};
+
+// The user's own background: scaled down and re-encoded here, so a 10 MB phone photo is kept as a few hundred KB.
+async function setBackground(file) {
+  const msg = $('tp-msg');
+  msg.textContent = '';
+  let url;
+  try {
+    const img = await createImageBitmap(file);
+    const scale = Math.min(1, BG_MAX / Math.max(img.width, img.height));
+    const canvas = Object.assign(document.createElement('canvas'), { width: Math.round(img.width * scale), height: Math.round(img.height * scale) });
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = getComputedStyle(document.body).backgroundColor;  // under a transparent PNG
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    url = canvas.toDataURL('image/jpeg', 0.82);
+  } catch (err) {
+    msg.textContent = `${file.name} cannot be read as an image here. Pick a JPEG, PNG or WebP file.`;
+    return;
+  }
+  bgImage = url;
+  try { localStorage.setItem('bw-bg', url); } catch (err) {
+    msg.textContent = 'Shown for now, but this browser has no room to keep it after you close the window.';
+  }
+  ACTIONS.theme('scene:image');
+}
+$('tp-file').addEventListener('change', (ev) => { if (ev.target.files[0]) setBackground(ev.target.files[0]); ev.target.value = ''; });
+$('tp-dim').addEventListener('input', (ev) => { theme.dim = Number(ev.target.value); saveTheme(); applyTheme(false); });
+darkQuery.addEventListener('change', () => { if (theme.mode === 'system') applyTheme(true); });
+applyTheme(false);
+
 boot();
 setInterval(pollExtension, 2000);
+setInterval(() => { if (!document.hidden && S.catalog) refreshRuns(); }, 2000);

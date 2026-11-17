@@ -1,28 +1,41 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-palette="ocean" data-mode="light" data-scene="none">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bench Wizard</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script>
+// The saved appearance, set before the first paint so a dark theme never flashes light. app.js owns changes.
+(function () {
+  var t = {}; try { t = JSON.parse(localStorage.getItem('bw-theme') || '{}') || {}; } catch (e) { /* private window */ }
+  var d = document.documentElement;
+  d.dataset.palette = t.palette || 'ocean'; d.dataset.scene = t.scene || 'none';
+  d.dataset.mode = t.mode === 'dark' || (t.mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+})();
+</script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Flex:opsz,wght@8..144,400..600&family=Roboto+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="shell">
   <aside class="rail">
     <div class="brand">
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#2E8BE6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>
-      <span>Bench Wizard<small>Local Frappe setup</small></span>
+      <span class="logo"><svg class="i" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4H4c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.89-2-2-2zm0 14H4V8h16v10zm-2-1h-6v-2h6v2zM7.5 17l-1.41-1.41L8.67 13l-2.59-2.59L7.5 9l4 4-4 4z"/></svg></span>
+      <span class="grow">Bench Wizard<small>Local Frappe setup</small></span>
+      <button class="iconbtn" popovertarget="theme" id="theme-btn" aria-label="Appearance: colour, light or dark, background" title="Appearance"></button>
     </div>
     <div class="prog" aria-hidden="true"><i id="progress"></i></div>
     <nav class="vsteps" id="steps" aria-label="Wizard steps"></nav>
+    <div class="runs" id="runs" aria-label="Runs"></div>
     <div class="foot" id="rail-foot"></div>
   </aside>
   <div class="content">
+    <div class="scene" id="scene" aria-hidden="true"></div>
     <main class="main"><div class="col" id="view"><p class="lead">Loading…</p></div></main>
     <footer class="footer"><div class="in2" id="footer"></div></footer>
   </div>
 </div>
+<div class="theme-panel" id="theme" popover aria-label="Appearance"></div>
 <script src="app.js"></script>
 </body>
 </html>

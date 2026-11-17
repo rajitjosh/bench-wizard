@@ -20,8 +20,8 @@ class RunnerTest(unittest.TestCase):
         self.dir = Path(tmp.name)
         self.logs = self.dir / "logs"
 
-    def runner(self, steps, services=()):
-        r = Runner(steps, str(self.logs), dict(os.environ), services=services)
+    def runner(self, steps, services=(), parallel=False):
+        r = Runner(steps, str(self.logs), dict(os.environ), services=services, parallel=parallel)
         self.addCleanup(r.cancel)
         return r
 
@@ -35,6 +35,34 @@ class RunnerTest(unittest.TestCase):
 
     def states(self, r):
         return [s["state"] for s in r.snapshot()["steps"]]
+
+    def test_parallel_steps_run_side_by_side_and_retry_only_the_failed(self):
+        # each step waits for the other's file, so they finish only if they run at the same time
+        a, b, flag, count = (self.dir / n for n in ("a", "b", "flag", "count"))
+        r = self.runner([
+            sh("a", f"echo x >> {count}; touch {a}; for i in $(seq 50); do test -e {b} && exit 0; sleep 0.1; done; exit 1"),
+            sh("b", f"touch {b}; for i in $(seq 50); do test -e {a} && break; sleep 0.1; done; test -f {flag}"),
+        ], parallel=True)
+        r.start()
+        snap = self.wait(r, "failed")
+        self.assertTrue(snap["parallel"])
+        self.assertEqual((self.states(r), snap["failed"]), (["done", "failed"], "b"))
+        flag.write_text("")
+        r.retry(cleanup=False)
+        self.wait(r, "done")
+        self.assertEqual(count.read_text().count("x"), 1)
+
+    def test_parallel_cancel_stops_every_step(self):
+        r = self.runner([sh("a", "sleep 30"), sh("b", "sleep 30")], parallel=True)
+        r.start()
+        deadline = time.time() + 5
+        while self.states(r) != ["running", "running"] and time.time() < deadline:
+            time.sleep(0.02)
+        started = time.time()
+        r.cancel()
+        self.wait(r, "cancelled")
+        self.assertLess(time.time() - started, 5)
+        self.assertEqual(self.states(r), ["failed", "failed"])
 
     def test_success_runs_every_step_and_writes_logs(self):
         r = self.runner([sh("a", "echo one"), sh("b", "echo two; echo err >&2")])

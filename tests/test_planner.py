@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -276,3 +280,54 @@ class PlanExistingTest(unittest.TestCase):
         for bad in ("x;y", "-x", "a b"):
             with self.assertRaises(planner.PlanError):
                 self.plan(site=bad)
+
+
+class PlanMigrateTest(unittest.TestCase):
+    def test_one_migrate_step_per_site(self):
+        steps = planner.plan_migrate({"folder": F, "sites": ["a.localhost", "b_c.local"]})
+        self.assertEqual([st.id for st in steps], ["migrate-a.localhost", "migrate-b_c.local"])
+        self.assertEqual(argvs(steps)[1], ["bench", "--site", "b_c.local", "migrate"])
+        self.assertTrue(all(st.cwd == F for st in steps))
+
+    def test_site_name_is_validated(self):
+        for bad in ("x;y", "-x", "../x"):
+            with self.assertRaises(planner.PlanError):
+                planner.plan_migrate({"folder": F, "sites": [bad]})
+
+
+class PlanPortsTest(unittest.TestCase):
+    PORTS = {"webserver_port": 8003, "socketio_port": 9003, "file_watcher_port": 6790,
+             "redis_cache": 13003, "redis_queue": 11003}
+
+    def test_sets_common_config_then_redis_then_procfile(self):
+        steps = planner.plan_ports(F, self.PORTS)
+        self.assertEqual([st.id for st in steps], ["ports", "setup-redis", "procfile"])
+        argv = steps[0].argv
+        self.assertEqual(argv[:3], ["bench", "config", "set-common-config"])
+        self.assertIn("'redis://127.0.0.1:13003'", argv)
+        self.assertEqual(argv[argv.index("redis_socketio") + 1], "'redis://127.0.0.1:13003'")
+        self.assertEqual(steps[2].argv[-1], "8003")
+
+    def test_ports_are_validated(self):
+        for bad in (dict(self.PORTS, webserver_port=80), dict(self.PORTS, socketio_port=8003),
+                    dict(self.PORTS, redis_queue="11003"), dict(self.PORTS, redis_queue=True)):
+            with self.assertRaises(planner.PlanError):
+                planner.plan_ports(F, bad)
+
+    def test_new_bench_moves_to_its_ports_right_after_init(self):
+        steps = planner.plan(answers(ports=self.PORTS), CATALOG)
+        self.assertEqual([st.id for st in steps][:4], ["init", "ports", "setup-redis", "procfile"])
+
+    def test_procfile_script_sets_only_the_web_port(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "Procfile")
+            for before, after in (("web: bench serve --port 8000\nworker: x --port 1\n", "web: bench serve --port 8003\nworker: x --port 1\n"),
+                                  ("web: bench serve  \n", "web: bench serve --port 8003\n")):
+                with open(path, "w") as fh:
+                    fh.write(before)
+                subprocess.run([sys.executable, planner.PROCFILE_PORT, "8003"], cwd=d, check=True)
+                with open(path) as fh:
+                    self.assertEqual(fh.read(), after)
+            os.remove(path)
+            subprocess.run([sys.executable, planner.PROCFILE_PORT, "8003"], cwd=d, check=True)  # no Procfile: no-op
+            self.assertFalse(os.path.exists(path))
