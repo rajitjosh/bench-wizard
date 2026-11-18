@@ -666,6 +666,8 @@ class App:
             raise ApiError(409, "check the upgrade again first")
         if check["errors"]:
             raise ApiError(400, "; ".join(check["errors"]))
+        if folder in (projects.usage([folder]) or {}):  # its processes would run on code and an env/ being swapped out
+            raise ApiError(409, "the bench is running; stop it first, then upgrade")
         python, rebuild = check["python"], bool(body.get("rebuild"))
         if not python["ok"] and not rebuild:
             raise ApiError(400, f"{check['title']} needs Python {python['needs']} and this bench has {python['env'] or 'none'}; "
@@ -701,8 +703,8 @@ class App:
                      **({} if found else {"install_node": str(check["node"])})})
         summary = dict(self._bench_summary(folder, check["version"], check["node"]), title=f"Upgrade to {check['title']}",
                        op="upgrade")
-        return self._hold(steps, env, rows, summary, planner.services({"folder": folder}, before="migrate"),
-                          check["notices"])
+        services = planner.services({"folder": folder}, before="migrate") if info["sites"] else []
+        return self._hold(steps, env, rows, summary, services, check["notices"])
 
     def get_bench_log(self, query, body):
         info, _ = self._light_bench(query.get("folder"))
@@ -784,7 +786,8 @@ class App:
                     remote = state["upstream"].split("/")[0] or None
                     if not remote:
                         raise ApiError(400, f"{app} has no branch {branch} and no remote to fetch it from")
-            steps = self._steps(planner.plan_app_update, folder, app, branch, remote, stash, body.get("migrate", True) is not False)
+            migrate = body.get("migrate", True) is not False and bool(info["sites"])  # `--site all` fails on none
+            steps = self._steps(planner.plan_app_update, folder, app, branch, remote, stash, migrate)
             title = f"Switch {app} to {branch}" if branch else f"Update {app}"
         elif op == "upgrade":
             return self._plan_upgrade(info, body)

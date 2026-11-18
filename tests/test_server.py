@@ -676,6 +676,10 @@ class ServerTest(unittest.TestCase):
         (app / "f.txt").write_text("x")
         git(app, "add", "f.txt")  # staged, not committed
         self.assertEqual(plan(rebuild=True)[0], 409)
+        with mock.patch.object(projects, "usage", lambda folders: {folder: {"rss": 1, "procs": 3}}):
+            status, res = plan(rebuild=True, stash=True)
+        self.assertEqual(status, 409)
+        self.assertIn("running", res["error"])
         status, p = plan(rebuild=True, stash=True)
         self.assertEqual(status, 200)
         self.assertEqual([s["id"] for s in p["steps"]], [

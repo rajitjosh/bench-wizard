@@ -94,7 +94,7 @@ class PlanTest(unittest.TestCase):
             "backup-a.localhost", "fetch-frappe", "switch-frappe", "stash-mine", "switch-mine", "env-aside", "env",
             "nvmrc", "get-telephony", "requirements", "migrate", "build"])
         self.assertEqual(steps[6].argv, ["bench", "setup", "env", "--python", "python3.14"])
-        self.assertEqual([s.id for s in planner.plan_bench_upgrade("/b", [], [], [])], ["requirements", "migrate", "build"])
+        self.assertEqual([s.id for s in planner.plan_bench_upgrade("/b", [], [], [])], ["requirements", "build"])  # no sites
         with self.assertRaises(planner.PlanError):
             planner.plan_bench_upgrade("/b", [], [], [], python="3; rm -rf ~")
 

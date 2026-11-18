@@ -359,12 +359,16 @@ the branch it would move to and why:
 - Apps the new branches require, and the Node they need, are worked out the same way as for a new bench.
 - An app with no remote stays on its branch.
 
-It also says whether the bench's own Python can run the new version (Frappe 16 needs Python 3.14). Then choose:
+It also says whether the bench's own Python can run the new version (Frappe 16 needs Python 3.14). Stop the bench
+first: the wizard will not upgrade a running one. If the new version's Node is missing, the page offers to install it
+with its Yarn. Then choose:
 
 - **Upgrade this bench**, as Frappe Cloud does: back up every site, move the apps (uncommitted changes are stashed if
   you tick the box), give the bench a new Python environment when it needs one (the old one is kept as
   `env-before-upgrade`; to go back, `rm -rf env && mv env-before-upgrade env` and switch the apps back), write
   `.nvmrc`, add new apps, then `bench setup requirements`, migrate every site and `bench build`.
+  An app that already has a local branch of that name (from an earlier switch) moves to it as it is; press **Update**
+  afterwards to pull its newer commits.
 - **Make a new bench instead**, which leaves this one as it is. The wizard starts a new setup for that version with
   the picked apps and branches ready under *Paste an app list*; back the sites up here and restore a backup into it.
 

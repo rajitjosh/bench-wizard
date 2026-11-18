@@ -158,9 +158,10 @@ def plan_bench_upgrade(folder, sites, moves, new_apps, python=None, node=None):
     if node:
         steps.append(_nvmrc(node, folder))
     steps += [_get_app(app, folder) for app in new_apps]
-    return steps + [Step("requirements", "bench setup requirements", ["bench", "setup", "requirements"], folder),
-                    Step("migrate", "migrate every site", ["bench", "--site", "all", "migrate"], folder),
-                    Step("build", "build every app's assets", ["bench", "build"], folder)]
+    steps.append(Step("requirements", "bench setup requirements", ["bench", "setup", "requirements"], folder))
+    if sites:  # bench refuses `--site all` on a bench that has none
+        steps.append(Step("migrate", "migrate every site", ["bench", "--site", "all", "migrate"], folder))
+    return steps + [Step("build", "build every app's assets", ["bench", "build"], folder)]
 
 
 # A cached copy of one branch: cloned the first time, moved to the branch's newest commit after that.

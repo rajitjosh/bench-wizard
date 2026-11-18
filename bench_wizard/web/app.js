@@ -850,6 +850,8 @@ async function benchRun(body, ask) {
   S.bp.busy = 'run'; S.bp.msg = ''; render();
   try {
     const plan = await api('POST', '/api/plan', Object.assign({ folder: S.bp.folder }, body));
+    // a Node the plan needs and nvm lacks: the page offers to install it with its Yarn, as Review does
+    S.bp.installNode = (plan.checks.find((c) => !c.ok && c.install_node) || {}).install_node || '';
     if (!plan.ok) throw new Error(plan.checks.filter((c) => !c.ok).map((c) => c.label).join('; '));
     const res = await api('POST', '/api/run', {});
     S.bp.busy = '';
@@ -928,7 +930,8 @@ function viewBench() {
   const head = `<div class="row" style="align-items:flex-end"><div class="head"><h1>${esc(tilde(d.folder))}</h1>
       <p class="lead">${esc(d.version_title)} · web on port <span class="mono">${esc(d.ports.webserver_port)}</span> · Node ${esc(d.node || '?')}</p></div>
       ${run == null ? '' : run ? '<span class="badge green"><i class="pip"></i>Running</span>' : '<span class="badge">Stopped</span>'}</div>
-    ${bp.msg ? `<div class="note bad">${INFO}<span style="white-space:pre-wrap">${esc(bp.msg)}</span></div>` : ''}
+    ${bp.msg ? `<div class="note bad">${INFO}<span style="white-space:pre-wrap">${esc(bp.msg)}</span>${bp.installNode
+      ? ` <button class="btn sm tonal" data-act="bp-node" ${busy ? 'disabled' : ''}>${bp.busy === 'node' ? '<span class="spin"></span> Installing…' : `Install Node ${esc(bp.installNode)} and its Yarn`}</button>` : ''}</div>` : ''}
     ${bp.note ? `<div class="note info">${INFO}<span>${esc(bp.note)}</span></div>` : ''}`;
 
   // Sites: open signed in, back up, edit config, drop; their apps, each removable
@@ -1164,6 +1167,20 @@ const BENCH_ACTIONS = {
       + ', requirements are set up, every site is migrated and every app\'s assets are built. Only restoring the backups undoes the migrate.');
   },
   'bp-up-new': () => newBenchFor(S.bp.up.d),
+  'bp-node': async () => {
+    const node = S.bp.installNode;
+    S.bp.busy = 'node'; render();
+    for (const id of ['node', 'yarn']) {
+      let res;
+      try { res = await api('POST', '/api/checks/install', { id, node }); } catch (err) { res = { ok: false, log: err.message }; }
+      if (!res.ok) {
+        S.bp.busy = ''; S.bp.msg = `${id === 'node' ? 'Node' : 'Yarn'} ${node} could not be installed: ${(res.log || '').trim().split('\n').pop()}`;
+        return render();
+      }
+    }
+    Object.assign(S.bp, { busy: '', msg: '', installNode: '', note: `Node ${node} and its Yarn are installed. Press the button again to continue.` });
+    render();
+  },
   'bp-report-run': () => {
     const { d: u, scan, claude } = S.bp.up;
     const apps = Object.keys(scan).filter((n) => scan[n]);
