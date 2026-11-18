@@ -1,0 +1,5 @@
+{
+  "name": "bench-wizard-frappe",
+  "version": "1.0.0",
+  "description": "Frappe skills Bench Wizard loads for Claude: what a custom app must change for a Frappe version upgrade."
+}

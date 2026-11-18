@@ -368,6 +368,30 @@ It also says whether the bench's own Python can run the new version (Frappe 16 n
 - **Make a new bench instead**, which leaves this one as it is. The wizard starts a new setup for that version with
   the picked apps and branches ready under *Paste an app list*; back the sites up here and restore a backup into it.
 
+#### What your apps must change
+
+After a check, **Make the report** compares your own apps' code with the new version. Apps from Frappe itself start
+unticked, because they make their own branch for it. The new version's code of Frappe, ERPNext and the apps yours
+requires is cloned once into `~/.cache/bench-wizard/trees/` and reused. The scanner
+([`bench_wizard/upgrade_scan.py`](bench_wizard/upgrade_scan.py), standard library only) then reports, worst first:
+
+- core functions and imports the app uses that were removed, moved or changed;
+- overrides whose original method changed, and override classes that do not inherit the class they replace (an error
+  on Frappe 16);
+- fields of standard DocTypes the app relies on that were removed, became mandatory or changed type;
+- the known breaking changes for Version 15 → 16: query-builder syntax in `get_all`, `db.commit()` in doc events,
+  `set_value` on Single DocTypes, `/app` links, version pins and more. Other version pairs get the first three only.
+
+The scanner points at places to look; some findings are false alarms. With
+[Claude Code](https://claude.com/claude-code) installed and signed in, tick **Also have Claude review the findings**:
+Claude reads the app and both versions' code, drops false alarms and writes what to change, with an effort estimate.
+It runs as `claude -p --restricted --allowed-tools Read Grep Glob Skill`, so it can read files but not run commands
+or change anything, and it loads the skill in [`bench_wizard/claude-plugin`](bench_wizard/claude-plugin) for that run
+only; nothing is installed into your Claude settings. It sends the app's code to Anthropic through your Claude login,
+counts against your usage, and takes a few minutes per app.
+
+Reports are listed on the bench page and saved under `~/.local/state/bench-wizard/upgrade-reports/`.
+
 ### Backups
 
 ![Backups: the bench's own, ready to restore as a new site, and a Frappe Cloud site's backups](screenshots/12-backups.png)

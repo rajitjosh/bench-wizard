@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -566,6 +567,7 @@ class App:
         return dict(info, version_title=self._profile(info["version"])["title"], node=node,
                     running=None if used is None else folder in used, apps=sites_mod.apps(folder),
                     backups=sites_mod.backups(folder), logs=sites_mod.logs(folder),
+                    reports=upgrade_mod.reports(self.state_root, folder),
                     cloud=sorted(self._cloud()))
 
     def post_bench_updates(self, query, body):
@@ -606,9 +608,56 @@ class App:
                                        lambda repo: market_mod.branches(repo, "", env=git_env), self.resolve)
         except ValueError as exc:
             raise ApiError(400, str(exc))
-        result.update(current=info["version"], bench_node=node)
+        result.update(current=info["version"], bench_node=node, claude=bool(self._claude(node)))
         self.upgrades[info["folder"]] = result
         return result
+
+    def _claude(self, node):
+        """Claude Code's path, where a bench command would find it, or None."""
+        return shutil.which("claude", path=self.checks.build_env(node).get("PATH"))
+
+    def _plan_report(self, info, node, body):
+        """Scan custom apps for what they must change on the version the last upgrade check was for."""
+        folder = info["folder"]
+        check = self.upgrades.get(folder)
+        if not check or check["version"] != body.get("version"):
+            raise ApiError(409, "check the upgrade again first")
+        names = body.get("apps")
+        if not isinstance(names, list) or not names:
+            raise ApiError(400, "pick at least one app to report on")
+        claude = self._claude(node) if body.get("claude") else None
+        if body.get("claude") and not claude:
+            raise ApiError(400, "Claude Code was not found. Install it, run `claude` once in a terminal to sign in, then try again")
+        trees, scans = {}, []
+        for app in dict.fromkeys(map(str, names)):
+            self._app_of(info, app)
+            cores = upgrade_mod.core_apps(folder, app, check["apps"], self.catalog)
+            for r in cores:
+                trees[r["name"]] = (r["name"], r["repo"], r["branch"],
+                                    os.path.join(upgrade_mod.trees_root(), f"{r['name']}-{r['branch']}"))
+            sources = [(r["name"], os.path.join(folder, "apps", r["name"])) for r in cores]
+            targets = [(r["name"], trees[r["name"]][3]) for r in cores]
+            out = upgrade_mod.report_dir(self.state_root, folder, check["version"], app)
+            scans.append({"app": app, "out": out, "rules": upgrade_mod.rules_for(info["version"], check["version"]),
+                          "sources": sources, "targets": targets,
+                          "prompt": upgrade_mod.claude_prompt(app, check["title"], sources, targets, out)})
+        steps = self._steps(planner.plan_upgrade_report, folder, list(trees.values()), scans, upgrade_mod.SCANNER,
+                            claude, upgrade_mod.PLUGIN)
+        rows = [{"ok": True, "label": f"{len(scans)} app{'s' * (len(scans) != 1)} compared with {check['title']}"}]
+        if claude:
+            rows.append({"ok": True, "label": f"Claude Code at {claude} reviews the findings with read-only tools"})
+        summary = dict(self._bench_summary(folder, info["version"], node), op="upgrade-report",
+                       title=f"What {scans[0]['app'] if len(scans) == 1 else f'{len(scans)} apps'} must change for {check['title']}")
+        return self._hold(steps, dict(self.checks.build_env(node), **self._git_env()), rows, summary, [], [])
+
+    def get_bench_report(self, query, body):
+        info, _ = self._light_bench(query.get("folder"))
+        version, app = query.get("version", ""), self._app_of(info, query.get("app"))
+        self._profile(version)
+        report = upgrade_mod.read_report(upgrade_mod.report_dir(self.state_root, info["folder"], version, app))
+        if report is None:
+            raise ApiError(404, f"no report for {app} on {version} yet")
+        return dict(report, app=app, version=version)
 
     def _plan_upgrade(self, info, body):
         folder = info["folder"]
@@ -739,6 +788,8 @@ class App:
             title = f"Switch {app} to {branch}" if branch else f"Update {app}"
         elif op == "upgrade":
             return self._plan_upgrade(info, body)
+        elif op == "upgrade-report":
+            return self._plan_report(info, node, body)
         elif op == "fc-download":
             domain = str(body.get("domain", ""))
             try:
@@ -956,6 +1007,7 @@ class App:
         ("POST", "/api/bench/updates"): post_bench_updates,
         ("POST", "/api/bench/branches"): post_bench_branches,
         ("POST", "/api/bench/upgrade"): post_bench_upgrade,
+        ("GET", "/api/bench/report"): get_bench_report,
         ("GET", "/api/bench/log"): get_bench_log,
         ("POST", "/api/site/login"): post_site_login,
         ("GET", "/api/site/config"): get_site_config,

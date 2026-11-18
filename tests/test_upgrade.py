@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -100,3 +101,51 @@ class PlanTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReportTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_an_app_is_compared_with_frappe_erpnext_and_what_it_requires(self):
+        folder = self.root / "b"
+        (folder / "apps" / "mine" / "mine").mkdir(parents=True)
+        (folder / "apps" / "mine" / "mine" / "hooks.py").write_text('app_name = "mine"\nrequired_apps = ["hrms"]\n')
+        cat = catalog.load(ROOT / "catalog.json")
+        cat["apps"]["hrms"] = {"title": "HRMS", "repo": "r", "branches": {}, "requires": []}
+        rows = [{"name": n, "branch": "version-16", "repo": f"https://x/{n}"} for n in ("frappe", "erpnext", "hrms", "lending", "mine")]
+        self.assertEqual([r["name"] for r in upgrade.core_apps(str(folder), "mine", rows, cat)], ["frappe", "erpnext", "hrms"])
+        self.assertEqual(upgrade.rules_for("version-15", "version-16"), "v15-v16")
+        self.assertEqual(upgrade.rules_for("version-16", "version-17"), "none")
+
+    def test_reports_are_read_worst_first_and_listed_per_bench(self):
+        out = Path(upgrade.report_dir(str(self.root / "state"), "/benches/b", "version-16", "mine"))
+        out.mkdir(parents=True)
+        (out / "findings.json").write_text(json.dumps([{"id": "A", "severity": "low"}, {"id": "B", "severity": "high"}]))
+        report = upgrade.read_report(str(out))
+        self.assertEqual(([f["id"] for f in report["findings"]], report["counts"]["high"], report["claude"]), (["B", "A"], 1, ""))
+        (out / "claude.md").write_text("# Verdict")
+        self.assertEqual(upgrade.read_report(str(out))["claude"], "# Verdict")
+        self.assertEqual([(r["app"], r["claude"]) for r in upgrade.reports(str(self.root / "state"), "/benches/b")], [("mine", True)])
+        self.assertEqual(upgrade.reports(str(self.root / "state"), "/benches/other"), [])
+        self.assertIsNone(upgrade.read_report(str(self.root / "nothing")))
+
+    def test_report_plan_fetches_trees_scans_and_has_claude_only_read(self):
+        scan = {"app": "mine", "out": "/s/out", "rules": "v15-v16", "sources": [("frappe", "/b/apps/frappe")],
+                "targets": [("frappe", "/t/frappe-version-16")], "prompt": "review it"}
+        trees = [("frappe", "https://github.com/frappe/frappe.git", "version-16", "/t/frappe-version-16")]
+        steps = planner.plan_upgrade_report("/b", trees, [scan], "/w/upgrade_scan.py")
+        self.assertEqual([s.id for s in steps], ["tree-frappe", "scan-mine"])
+        self.assertIn("frappe=/t/frappe-version-16", steps[1].argv)
+        steps = planner.plan_upgrade_report("/b", trees, [scan], "/w/upgrade_scan.py", claude="/bin/claude", plugin="/w/p")
+        review = steps[2].argv
+        self.assertEqual((steps[2].id, steps[2].cwd, review[4]), ("review-mine", "/b/apps/mine", "/s/out/claude.md"))
+        for flag in ("--restricted", "--strict-mcp-config", "--no-session-persistence"):
+            self.assertIn(flag, review)
+        tools = review[review.index("--allowed-tools") + 1:review.index("--no-session-persistence")]
+        self.assertEqual(tools, ["Read", "Grep", "Glob", "Skill"])
+        with self.assertRaises(planner.PlanError):
+            planner.plan_upgrade_report("/b", [("frappe", "r", "--upload-pack=x", "/t")], [], "/w/s.py")
+

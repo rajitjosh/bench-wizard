@@ -163,6 +163,38 @@ def plan_bench_upgrade(folder, sites, moves, new_apps, python=None, node=None):
                     Step("build", "build every app's assets", ["bench", "build"], folder)]
 
 
+# A cached copy of one branch: cloned the first time, moved to the branch's newest commit after that.
+FETCH_TREE = ('if [ -d "$3/.git" ]; then git -C "$3" fetch -q --depth 1 origin "$2" && exec git -C "$3" checkout -q -f FETCH_HEAD; '
+              'fi; mkdir -p "$(dirname "$3")" && exec git clone -q --depth 1 --branch "$2" -- "$1" "$3"')
+# Claude's review is kept only when it finished, so a stopped run never leaves half a report.
+KEEP_REVIEW = 'out=$1; shift; "$@" > "$out.part"; rc=$?; cat "$out.part"; [ $rc -eq 0 ] && mv "$out.part" "$out"; exit $rc'
+
+
+def plan_upgrade_report(folder, trees, scans, scanner, claude=None, plugin=None):
+    """What custom apps must change for another Frappe version. `trees` are (name, repo, branch, path) of the target
+    versions; each scan is {"app", "out", "rules", "sources", "targets", "prompt"}, sources and targets being
+    (name, path). With `claude` (its path), Claude reviews the scanner's findings with read-only tools."""
+    steps = [Step(f"tree-{name}", f"fetch {name} {branch} to compare with", ["sh", "-c", FETCH_TREE, "sh", repo,
+                                                                             _branch_name(branch), path], folder)
+             for name, repo, branch, path in trees]
+    for scan in scans:
+        app = _site_name(scan["app"])
+        app_dir, out = os.path.join(folder, "apps", app), scan["out"]
+        argv = [sys.executable, scanner, "--app", app_dir, "--rules", scan["rules"], "--out", out]
+        argv += [a for name, path in scan["sources"] for a in ("--source", f"{name}={path}")]
+        argv += [a for name, path in scan["targets"] for a in ("--target", f"{name}={path}")]
+        steps.append(Step(f"scan-{app}", f"scan {app}",
+                          ["sh", "-c", 'rm -f "$1/claude.md"; shift; exec "$@"', "sh", out] + argv, folder))
+        if claude:
+            dirs = [out] + [path for _, path in scan["sources"] + scan["targets"]]
+            review = [claude, "-p", scan["prompt"], "--plugin-dir", plugin, "--restricted", "--strict-mcp-config",
+                      "--allowed-tools", "Read", "Grep", "Glob", "Skill", "--no-session-persistence"]
+            review += [a for d in dirs for a in ("--add-dir", d)]
+            steps.append(Step(f"review-{app}", f"Claude reviews {app}",
+                              ["sh", "-c", KEEP_REVIEW, "sh", os.path.join(out, "claude.md")] + review, app_dir))
+    return steps
+
+
 def plan_download(folder, domain, links):
     """Download a Frappe Cloud backup's files into fc-backups/<domain>/ of the bench, under their own names."""
     target = os.path.join(folder, "fc-backups", _site_name(domain))

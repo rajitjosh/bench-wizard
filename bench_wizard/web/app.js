@@ -818,7 +818,7 @@ function viewDone() {
 // ---------------------------------------------------------------- one bench
 // The bench page: its sites, apps, backups and logs, read from the bench each time it opens.
 const freshBench = (folder) => ({ folder, d: null, busy: 'load', msg: '', note: '', sites: null, checked: false,
-  branches: {}, localOnly: {}, pick: {}, appMigrate: true, up: { version: '', d: null, stash: false }, cfg: null, drop: null, migBackup: true, fcDomain: '', fcUrl: 'https://cloud.frappe.io', fc: {},
+  branches: {}, localOnly: {}, pick: {}, appMigrate: true, up: { version: '', d: null, stash: false, scan: {}, claude: false }, report: null, cfg: null, drop: null, migBackup: true, fcDomain: '', fcUrl: 'https://cloud.frappe.io', fc: {},
   log: { name: '', lines: [], offset: null, q: '', errors: false, follow: true } });
 const ERROR_LINE = /\b(ERROR|CRITICAL|FATAL)\b|\[(error|crit|alert|emerg)\]|Traceback \(most recent call last\)|^\s*[\w.]*(Error|Exception)\b:/;
 const when = (t) => new Date(typeof t === 'number' ? t * 1000 : t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
@@ -1008,12 +1008,13 @@ function viewBench() {
       <div class="acts" style="margin-top:12px">
         <button class="btn tonal" data-act="bp-up-run" ${busy || u.errors.length ? 'disabled' : ''}>${icon('sync', 18)}Upgrade this bench</button>
         <button class="btn" data-act="bp-up-new" ${busy ? 'disabled' : ''}>${icon('add', 18)}Make a new bench instead</button></div>
-      <p class="lead small">Upgrading this bench is how Frappe Cloud does it: the same bench moves to the new version, its sites are backed up and then migrated. A new bench leaves this one as it is; back the sites up here and restore a backup into it.</p></div>`;
+      <p class="lead small">Upgrading this bench is how Frappe Cloud does it: the same bench moves to the new version, its sites are backed up and then migrated. A new bench leaves this one as it is; back the sites up here and restore a backup into it.</p>
+      ${reportPicker(u, up, busy)}</div>`;
   }
   const upgrade = versions.length ? `<section class="card flush"><div class="loghead"><h2>Upgrade</h2><div class="right">
       <select class="in sm" data-bind="bp.up.version" aria-label="Frappe version to upgrade to">${versions.map((v) => `<option value="${esc(v)}" ${v === up.version ? 'selected' : ''}>${esc(S.catalog.frappe_versions[v].title)}</option>`).join('')}</select>
       <button class="btn sm" data-act="bp-up-check" ${busy ? 'disabled' : ''}>${icon('refresh', 18)}Check</button></div></div>
-    ${upBody || `<p class="lead small" style="padding:0 16px 16px">Check finds each app's branch for the version you pick, from what its <span class="mono">pyproject.toml</span> says it supports, and whether this bench's Python can run it.</p>`}</section>` : '';
+    ${upBody}${reportList(d, bp)}${upBody ? '' : `<p class="lead small" style="padding:0 16px 16px">Check finds each app's branch for the version you pick, from what its <span class="mono">pyproject.toml</span> says it supports, and whether this bench's Python can run it.</p>`}</section>` : '';
 
   // Backups: on disk, and Frappe Cloud's; any of them becomes a new site
   const backupRows = d.backups.map((b, i) => `<tr><td class="mono">${esc(b.site)}</td><td>${esc(when(b.when))}</td>
@@ -1150,7 +1151,7 @@ const BENCH_ACTIONS = {
   'bp-up-check': async () => {
     const up = S.bp.up;
     S.bp.busy = 'upgrade'; S.bp.msg = ''; up.d = null; up.stash = false; render();
-    try { up.d = await api('POST', '/api/bench/upgrade', { folder: S.bp.folder, version: up.version }); } catch (err) { S.bp.msg = err.message; }
+    try { up.d = await api('POST', '/api/bench/upgrade', { folder: S.bp.folder, version: up.version }); up.scan = {}; } catch (err) { S.bp.msg = err.message; }
     S.bp.busy = ''; render();
   },
   'bp-up-run': () => {
@@ -1163,6 +1164,22 @@ const BENCH_ACTIONS = {
       + ', requirements are set up, every site is migrated and every app\'s assets are built. Only restoring the backups undoes the migrate.');
   },
   'bp-up-new': () => newBenchFor(S.bp.up.d),
+  'bp-report-run': () => {
+    const { d: u, scan, claude } = S.bp.up;
+    const apps = Object.keys(scan).filter((n) => scan[n]);
+    if (!apps.length) { S.bp.msg = 'Tick at least one app to report on.'; return render(); }
+    benchRun({ op: 'upgrade-report', version: u.version, apps, claude: claude && u.claude },
+      `Compare ${apps.join(', ')} with ${u.title}? The ${u.title} code of the apps they build on is downloaded once (a few hundred MB) and kept for later reports.`
+      + (claude && u.claude ? ` Then Claude reads each app's code and the findings and writes a review: this sends the app's code to Anthropic through your Claude Code login, counts against your Claude usage, and takes a few minutes per app.` : ''));
+  },
+  'bp-report-open': async (arg) => {
+    const [version, app] = arg.split('|');
+    S.bp.report = { app, version, loading: true }; render();
+    try { S.bp.report = await api('GET', `/api/bench/report?folder=${encodeURIComponent(S.bp.folder)}&version=${encodeURIComponent(version)}&app=${encodeURIComponent(app)}`); }
+    catch (err) { S.bp.report = null; S.bp.msg = err.message; }
+    render();
+  },
+  'bp-report-close': () => { S.bp.report = null; render(); },
   'bp-fc-connect': async () => {
     const domain = S.bp.fcDomain.trim().toLowerCase();
     S.bp.busy = 'fc'; S.bp.msg = ''; render();
@@ -1390,6 +1407,40 @@ function startOver() {
   Object.assign(S, JSON.parse(FRESH), keep, { version: S.catalog.default_version });
   applyPreset(S.catalog.default_preset);
   go('project');
+}
+
+// What custom apps must change for the version checked: which apps, and whether Claude reviews the findings.
+function reportPicker(u, up, busy) {
+  const apps = u.apps.filter((a) => !S.catalog.apps[a.name] && !a.why.startsWith('cannot'));
+  if (!apps.length) return '';
+  for (const a of apps) if (!(a.name in up.scan)) up.scan[a.name] = !/^https:\/\/github\.com\/frappe\//.test(a.repo);
+  return `<h3 style="margin-top:20px">What your apps must change</h3>
+    <p class="lead small">Compares each app's code with ${esc(u.title)}: core functions it uses that moved or changed, overrides whose original changed, fields it relies on that are gone, and the known ${esc(u.title)} breaking changes. Apps from Frappe itself are unticked: they make their own ${esc(u.title)} branch.</p>
+    <div class="chips">${apps.map((a) => `<label class="tog small"><input type="checkbox" data-check="bp.up.scan.${esc(a.name)}" ${up.scan[a.name] ? 'checked' : ''}><span class="mono">${esc(a.name)}</span></label>`).join('')}</div>
+    ${u.claude ? `<label class="tog small"><input type="checkbox" data-check="bp.up.claude" ${up.claude ? 'checked' : ''}><span><strong>Also have Claude review the findings</strong><br><span class="hint">Claude Code reads the app's code and the findings, drops the false alarms and writes what to change, with effort. It only reads files. This sends the app's code to Anthropic through your Claude Code login and counts against your usage.</span></span></label>`
+      : '<p class="hint">With <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> installed and signed in, Claude can also review the findings.</p>'}
+    <div class="acts" style="margin-top:12px"><button class="btn" data-act="bp-report-run" ${busy ? 'disabled' : ''}>${icon('build', 18)}Make the report</button></div>`;
+}
+
+const SEV = { high: 'red', medium: 'amber', low: 'blue', info: '' };
+
+function reportList(d, bp) {
+  const r = bp.report;
+  const list = d.reports.length ? `<div style="padding:0 16px 16px"><h3>Reports</h3><table class="tbl stack"><tbody>${d.reports.map((x) => `<tr><td class="mono">${esc(x.app)}</td>
+      <td>${esc((S.catalog.frappe_versions[x.version] || { title: x.version }).title)}</td><td>${esc(when(x.when))}</td><td>${x.claude ? '<span class="badge blue">Reviewed by Claude</span>' : ''}</td>
+      <td class="acts"><button class="btn sm" data-act="bp-report-open" data-arg="${esc(x.version + '|' + x.app)}">Open</button></td></tr>`).join('')}</tbody></table></div>` : '';
+  if (!r) return list;
+  if (r.loading) return list + '<p class="lead small" style="padding:0 16px 16px"><span class="spin"></span> Reading the report…</p>';
+  const findings = r.findings.map((f) => `<li><span class="badge ${SEV[f.severity] || ''}">${esc(f.severity)}</span> <span class="mono">${esc(f.id)}</span> ${esc(f.message)}
+      ${f.file ? `<br><span class="mono sub">${esc(f.file)}${f.line ? ':' + esc(f.line) : ''}</span>` : ''}${f.snippet ? ` <code class="sub">${esc(f.snippet)}</code>` : ''}
+      ${f.fix ? `<br><span class="hint">Fix: ${esc(f.fix)}</span>` : ''}${/^https:\/\//.test(f.ref || '') ? ` <a class="hint" href="${esc(f.ref)}" target="_blank" rel="noopener">Reference</a>` : ''}</li>`).join('');
+  return list + `<div style="padding:0 16px 16px"><div class="row"><h3>${esc(r.app)}: what to change for ${esc((S.catalog.frappe_versions[r.version] || { title: r.version }).title)}</h3>
+      <button class="btn sm" data-act="bp-report-close">Close</button></div>
+    <div class="chips">${Object.entries(r.counts).map(([k, n]) => `<span class="badge ${SEV[k]}">${n} ${esc(k)}</span>`).join(' ')}</div>
+    <p class="hint">Saved in <span class="mono">${esc(tilde(r.folder))}</span>: <span class="mono">report.md</span>, <span class="mono">findings.json</span>${r.claude ? ' and <span class="mono">claude.md</span>' : ''}.</p>
+    ${r.claude ? `<h3 style="margin-top:16px">Claude's review</h3><div class="review">${esc(r.claude)}</div>` : ''}
+    <h3 style="margin-top:16px">Scanner findings${r.findings.length < Object.values(r.counts).reduce((a, b) => a + b, 0) ? ' (the first ' + r.findings.length + ')' : ''}</h3>
+    ${findings ? `<ul class="findings">${findings}</ul>` : '<p class="lead small">Nothing found.</p>'}</div>`;
 }
 
 // A new bench for the version an upgrade check was for, starting with the apps and branches it picked.

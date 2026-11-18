@@ -685,6 +685,38 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(any("python3.14" in c["label"] for c in p["checks"]))
         self.assertEqual(self.request("POST", "/api/plan", {"folder": folder, "op": "upgrade", "version": "version-15"})[0], 409)
 
+    def test_upgrade_report_is_planned_per_app_and_read_back(self):
+        from unittest import mock
+        from bench_wizard import projects, upgrade
+        from tests.test_projects import make_bench
+        from tests.test_sites import git
+        folder = make_bench(self.tmp / "home" / "b", projects.slot(0))
+        app = Path(folder) / "apps" / "mine"
+        git(self.tmp, "init", "-q", str(app))
+        (app / "mine").mkdir()
+        (app / "mine" / "hooks.py").write_text('app_name = "mine"\n')
+        canned = {"version": "version-16", "title": "Version 16", "errors": [], "notices": [], "new_apps": [], "node": "24",
+                  "apps": [{"name": "frappe", "now": "version-15", "branch": "version-16", "repo": "https://github.com/frappe/frappe.git", "why": "", "changed": False},
+                           {"name": "mine", "now": "main", "branch": "main", "repo": "", "why": "", "changed": False}],
+                  "python": {"env": "3.14.0", "needs": ">=3.14", "use": "3.14", "ok": True}}
+        plan = lambda **body: self.request("POST", "/api/plan", dict(body, folder=folder, op="upgrade-report", version="version-16"))
+        self.assertEqual(plan(apps=["mine"])[0], 409)
+        with mock.patch.object(upgrade, "check", lambda *a, **k: dict(canned)):
+            self.assertFalse(self.request("POST", "/api/bench/upgrade", {"folder": folder, "version": "version-16"})[1]["claude"])
+        self.assertEqual(plan(apps=["mine"], claude=True)[0], 400)  # Claude Code is not on the bench's PATH
+        self.assertEqual(plan(apps=["nope"])[0], 400)
+        status, p = plan(apps=["mine"])
+        self.assertEqual((status, [s["id"] for s in p["steps"]]), (200, ["tree-frappe", "scan-mine"]))
+        self.assertIn("--rules v15-v16", p["steps"][1]["command"])
+        report = lambda: self.request("GET", f"/api/bench/report?folder={folder}&version=version-16&app=mine")
+        self.assertEqual(report()[0], 404)
+        out = Path(upgrade.report_dir(self.app.state_root, folder, "version-16", "mine"))
+        out.mkdir(parents=True)
+        (out / "findings.json").write_text('[{"id": "X", "severity": "high"}]')
+        self.assertEqual(report()[1]["counts"]["high"], 1)
+        self.assertEqual(self.request("GET", f"/api/bench/report?folder={folder}&version=../x&app=mine")[0], 400)
+        self.assertEqual(self.request("GET", "/api/bench/detail?folder=" + folder)[1]["reports"][0]["app"], "mine")
+
     def test_site_config_and_login_need_a_site_of_the_bench(self):
         from tests.test_projects import make_bench
         folder = make_bench(self.tmp / "home" / "b")

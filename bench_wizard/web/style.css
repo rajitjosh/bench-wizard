@@ -375,3 +375,6 @@ td .acts,.fc .acts,.fcsite .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:
   .tbl.stack td.acts{text-align:left;padding-top:8px}.tbl.stack td.acts>*{margin:4px 6px 0 0}
   .logtools{margin-left:0;width:100%}.logtools select.in,.logtools input.in{flex:1 1 160px}
 }
+.findings{list-style:none;padding:0;margin:8px 0 0;display:grid;gap:12px;font-size:13.5px;line-height:1.55}
+.findings li,.review{overflow-wrap:anywhere}
+.review{white-space:pre-wrap;background:var(--md-surface-container);border-radius:12px;padding:14px 16px;font-size:14px;line-height:1.6;margin:0}
