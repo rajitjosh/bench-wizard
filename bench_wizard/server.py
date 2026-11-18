@@ -17,7 +17,7 @@ from . import checks as checks_mod
 from concurrent.futures import ThreadPoolExecutor
 
 from . import deps, desktop, existing as existing_mod, gitauth, planner, preflight as preflight_mod, projects
-from . import frappecloud, marketplace as market_mod, sites as sites_mod
+from . import frappecloud, marketplace as market_mod, sites as sites_mod, upgrade as upgrade_mod
 from .runner import Runner
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -67,6 +67,7 @@ class App:
             raise ValueError(f"not an SSH host alias: {github_ssh_host!r}")
         self.github_ssh_host = github_ssh_host or None  # e.g. "github-work" from ~/.ssh/config
         self.pending = None
+        self.upgrades = {}  # bench folder -> its last upgrade check, which an upgrade plan is built from
         self.runs = {}  # run id -> {"id", "runner", "summary"}, oldest first
         self.run_id = None  # the run started last: the one a request that names none is about
 
@@ -588,6 +589,72 @@ class App:
         names.sort(key=lambda b: b != app["branch"])  # the current one first, as the pick that changes nothing
         return {"branches": names, "local_only": [b for b in local if b not in remote], "error": error}
 
+    def post_bench_upgrade(self, query, body):
+        """Which branch each app of the bench would move to for another Frappe version, and what else must change."""
+        info, node = self._light_bench(body.get("folder"))
+        version = str(body.get("version", ""))
+        self._profile(version)
+        git_env = self._git_env()
+        seen = {}  # each branch is read once: when picked, and again when its requirements are followed
+
+        def inspect(repo, branch):
+            if (repo, branch) not in seen:
+                seen[repo, branch] = self.inspect_app(repo, branch, env=git_env)
+            return seen[repo, branch]
+        try:
+            result = upgrade_mod.check(info["folder"], version, self.catalog, inspect,
+                                       lambda repo: market_mod.branches(repo, "", env=git_env), self.resolve)
+        except ValueError as exc:
+            raise ApiError(400, str(exc))
+        result.update(current=info["version"], bench_node=node)
+        self.upgrades[info["folder"]] = result
+        return result
+
+    def _plan_upgrade(self, info, body):
+        folder = info["folder"]
+        check = self.upgrades.get(folder)
+        if not check or check["version"] != body.get("version"):
+            raise ApiError(409, "check the upgrade again first")
+        if check["errors"]:
+            raise ApiError(400, "; ".join(check["errors"]))
+        python, rebuild = check["python"], bool(body.get("rebuild"))
+        if not python["ok"] and not rebuild:
+            raise ApiError(400, f"{check['title']} needs Python {python['needs']} and this bench has {python['env'] or 'none'}; "
+                                "choose a new Python environment for it, or a new bench")
+        state = {a["name"]: a for a in sites_mod.apps(folder)}
+        moving = [r for r in check["apps"] if r["branch"] != state[r["name"]]["branch"]]
+        dirty = [r["name"] for r in moving if state[r["name"]]["changed"]]
+        if dirty and not body.get("stash"):
+            raise ApiError(409, f"{', '.join(dirty)}: changes that are not committed; commit them, or choose to stash them")
+        moves = []
+        for r in moving:
+            remote = None
+            if r["branch"] not in sites_mod.local_branches(folder, r["name"]):
+                remote = state[r["name"]]["upstream"].split("/")[0] or None
+                if not remote:
+                    raise ApiError(400, f"{r['name']} has no branch {r['branch']} and no remote to fetch it from")
+            moves.append({"name": r["name"], "branch": r["branch"], "remote": remote, "stash": r["name"] in dirty})
+        # also when the bench has no .nvmrc, so `nvm use` there gives the Node the new version needs
+        new_node = check["node"] if str(check["node"]) != str(existing_mod.nvmrc_node(folder)) else None
+        steps = self._steps(planner.plan_bench_upgrade, folder, info["sites"], moves, check["new_apps"],
+                            python["use"] if rebuild else None, new_node)
+        env = dict(self.checks.build_env(check["node"]), **self._git_env())
+        probe = preflight_mod.Probe()
+        rows = [{"ok": True, "label": f"Every app has a branch for {check['title']}"}]
+        if rebuild:
+            exe = f"python{python['use']}"
+            found = probe.tool_version([exe, "--version"], env)
+            rows.append({"ok": bool(found), "label": f"{exe} is available ({found})" if found else
+                         f"{exe} was not found. Fix: the System check for {check['title']} installs it"})
+        found = probe.node_installed(check["node"])
+        rows.append({"ok": bool(found), "label": f"Node {check['node']} is installed with nvm" if found else
+                     f"Node {check['node']} is not installed with nvm. Fix: nvm install {check['node']}",
+                     **({} if found else {"install_node": str(check["node"])})})
+        summary = dict(self._bench_summary(folder, check["version"], check["node"]), title=f"Upgrade to {check['title']}",
+                       op="upgrade")
+        return self._hold(steps, env, rows, summary, planner.services({"folder": folder}, before="migrate"),
+                          check["notices"])
+
     def get_bench_log(self, query, body):
         info, _ = self._light_bench(query.get("folder"))
         offset = query.get("offset", "")
@@ -670,6 +737,8 @@ class App:
                         raise ApiError(400, f"{app} has no branch {branch} and no remote to fetch it from")
             steps = self._steps(planner.plan_app_update, folder, app, branch, remote, stash, body.get("migrate", True) is not False)
             title = f"Switch {app} to {branch}" if branch else f"Update {app}"
+        elif op == "upgrade":
+            return self._plan_upgrade(info, body)
         elif op == "fc-download":
             domain = str(body.get("domain", ""))
             try:
@@ -886,6 +955,7 @@ class App:
         ("GET", "/api/bench/detail"): get_bench_detail,
         ("POST", "/api/bench/updates"): post_bench_updates,
         ("POST", "/api/bench/branches"): post_bench_branches,
+        ("POST", "/api/bench/upgrade"): post_bench_upgrade,
         ("GET", "/api/bench/log"): get_bench_log,
         ("POST", "/api/site/login"): post_site_login,
         ("GET", "/api/site/config"): get_site_config,

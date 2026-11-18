@@ -818,7 +818,7 @@ function viewDone() {
 // ---------------------------------------------------------------- one bench
 // The bench page: its sites, apps, backups and logs, read from the bench each time it opens.
 const freshBench = (folder) => ({ folder, d: null, busy: 'load', msg: '', note: '', sites: null, checked: false,
-  branches: {}, localOnly: {}, pick: {}, appMigrate: true, cfg: null, drop: null, migBackup: true, fcDomain: '', fcUrl: 'https://cloud.frappe.io', fc: {},
+  branches: {}, localOnly: {}, pick: {}, appMigrate: true, up: { version: '', d: null, stash: false }, cfg: null, drop: null, migBackup: true, fcDomain: '', fcUrl: 'https://cloud.frappe.io', fc: {},
   log: { name: '', lines: [], offset: null, q: '', errors: false, follow: true } });
 const ERROR_LINE = /\b(ERROR|CRITICAL|FATAL)\b|\[(error|crit|alert|emerg)\]|Traceback \(most recent call last\)|^\s*[\w.]*(Error|Exception)\b:/;
 const when = (t) => new Date(typeof t === 'number' ? t * 1000 : t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
@@ -982,6 +982,39 @@ function viewBench() {
       An app with changes that are not committed is stashed first; <span class="mono">git stash pop</span> in its folder brings them back.
       <label class="tog small"><input type="checkbox" data-check="bp.appMigrate" ${bp.appMigrate ? 'checked' : ''}>Migrate the sites after a switch (untick to switch code only)</label></div></section>`;
 
+  // Upgrade: every app to its branch for another Frappe version, in this bench or in a new one
+  const up = bp.up;
+  const versions = Object.keys(S.catalog.frappe_versions).filter((v) => v !== d.version);
+  if (!versions.includes(up.version)) up.version = versions.find((v) => v > d.version) || versions[0] || '';
+  const u = up.d && up.d.version === up.version ? up.d : null;
+  let upBody = '';
+  if (bp.busy === 'upgrade') upBody = '<p class="lead small"><span class="spin"></span> Reading each app\'s branches and what they support. This takes about half a minute.</p>';
+  else if (u) {
+    const moving = u.apps.filter((a) => a.branch && a.branch !== a.now);
+    const dirty = moving.filter((a) => a.changed).map((a) => a.name);
+    const py = u.python;
+    const rows = u.apps.map((a) => `<tr><td class="mono">${esc(a.name)}</td><td class="mono">${esc(a.now)}</td>
+        <td class="mono">${a.branch ? '→ ' + esc(a.branch) + (a.branch === a.now ? ' <span class="sub">(stays)</span>' : '') : '<span class="badge red">None</span>'}${dirty.includes(a.name) ? ' <span class="badge amber">Local changes</span>' : ''}</td>
+        <td class="sub">${esc(a.why)}</td></tr>`).join('')
+      + u.new_apps.map((a) => `<tr><td class="mono">${esc(a.name)}</td><td class="sub">not in the bench</td><td class="mono">→ ${esc(a.branch)}</td><td class="sub">added, because ${esc(a.added_for)} needs it</td></tr>`).join('');
+    upBody = `<div style="overflow-x:auto"><table class="tbl stack"><thead><tr><th>App</th><th>Now</th><th>Moves to</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div style="padding:0 16px 16px">
+      ${u.errors.length ? `<div class="note bad">${INFO}<span>${u.errors.map(esc).join('<br>')}</span></div>` : ''}
+      ${u.notices.length ? `<div class="note info">${INFO}<span>${u.notices.map(esc).join('<br>')}</span></div>` : ''}
+      <p class="lead small">${py.ok ? `This bench's Python ${esc(py.env)} can run ${esc(u.title)}.`
+        : `${esc(u.title)} needs Python <span class="mono">${esc(py.needs)}</span>; this bench has ${py.env ? 'Python ' + esc(py.env) : 'no Python environment that could be read'}. Upgrading this bench gives it a new Python ${esc(py.use)} environment and keeps the old one as <span class="mono">env-before-upgrade</span>.`}
+        Node ${esc(u.node)} builds the assets.</p>
+      ${dirty.length ? `<label class="tog small"><input type="checkbox" data-check="bp.up.stash" ${up.stash ? 'checked' : ''}><span>Stash the changes that are not committed in <span class="mono">${esc(dirty.join(', '))}</span> (git stash pop brings them back)</span></label>` : ''}
+      <div class="acts" style="margin-top:12px">
+        <button class="btn tonal" data-act="bp-up-run" ${busy || u.errors.length ? 'disabled' : ''}>${icon('sync', 18)}Upgrade this bench</button>
+        <button class="btn" data-act="bp-up-new" ${busy ? 'disabled' : ''}>${icon('add', 18)}Make a new bench instead</button></div>
+      <p class="lead small">Upgrading this bench is how Frappe Cloud does it: the same bench moves to the new version, its sites are backed up and then migrated. A new bench leaves this one as it is; back the sites up here and restore a backup into it.</p></div>`;
+  }
+  const upgrade = versions.length ? `<section class="card flush"><div class="loghead"><h2>Upgrade</h2><div class="right">
+      <select class="in sm" data-bind="bp.up.version" aria-label="Frappe version to upgrade to">${versions.map((v) => `<option value="${esc(v)}" ${v === up.version ? 'selected' : ''}>${esc(S.catalog.frappe_versions[v].title)}</option>`).join('')}</select>
+      <button class="btn sm" data-act="bp-up-check" ${busy ? 'disabled' : ''}>${icon('refresh', 18)}Check</button></div></div>
+    ${upBody || `<p class="lead small" style="padding:0 16px 16px">Check finds each app's branch for the version you pick, from what its <span class="mono">pyproject.toml</span> says it supports, and whether this bench's Python can run it.</p>`}</section>` : '';
+
   // Backups: on disk, and Frappe Cloud's; any of them becomes a new site
   const backupRows = d.backups.map((b, i) => `<tr><td class="mono">${esc(b.site)}</td><td>${esc(when(b.when))}</td>
       <td><div class="chips">${[['db', 'Database'], ['public', 'Public files'], ['private', 'Private files']].filter(([k]) => b[k]).map(([, l]) => `<span class="chip">${l}</span>`).join('')}</div></td>
@@ -1028,7 +1061,7 @@ function viewBench() {
   const footer = `${back}<div class="right">${run === true ? `<button class="btn stop" data-act="bp-power" data-arg="stop" ${busy ? 'disabled' : ''}>${icon('stop', 18)}Stop</button>`
     : run === false ? `<button class="btn tonal" data-act="bp-power" data-arg="start" ${busy ? 'disabled' : ''}>${icon('play_arrow', 18)}Start</button>` : ''}
     <button class="btn" data-act="bp-refresh" ${busy ? 'disabled' : ''}>${icon('refresh', 18)}Refresh</button></div>`;
-  return [head + sites + apps + backups + logs, footer];
+  return [head + sites + apps + upgrade + backups + logs, footer];
 }
 
 const BENCH_ACTIONS = {
@@ -1114,6 +1147,22 @@ const BENCH_ACTIONS = {
       + (migrate ? ' Moving to another major version changes every site\'s data, and moving back does not undo it; back the sites up first.' : ''));
   },
   'bp-restore': (i) => restoreAsNewSite(Number(i)),
+  'bp-up-check': async () => {
+    const up = S.bp.up;
+    S.bp.busy = 'upgrade'; S.bp.msg = ''; up.d = null; up.stash = false; render();
+    try { up.d = await api('POST', '/api/bench/upgrade', { folder: S.bp.folder, version: up.version }); } catch (err) { S.bp.msg = err.message; }
+    S.bp.busy = ''; render();
+  },
+  'bp-up-run': () => {
+    const u = S.bp.up.d;
+    const rebuild = !u.python.ok;
+    const n = u.apps.filter((a) => a.branch && a.branch !== a.now).length;
+    benchRun({ op: 'upgrade', version: u.version, rebuild, stash: S.bp.up.stash },
+      `Upgrade this bench to ${u.title}? Every site is backed up first. Then ${n} app${n === 1 ? '' : 's'} move to their new branches`
+      + (rebuild ? `, the bench gets a new Python ${u.python.use} environment (the old one is kept as env-before-upgrade)` : '')
+      + ', requirements are set up, every site is migrated and every app\'s assets are built. Only restoring the backups undoes the migrate.');
+  },
+  'bp-up-new': () => newBenchFor(S.bp.up.d),
   'bp-fc-connect': async () => {
     const domain = S.bp.fcDomain.trim().toLowerCase();
     S.bp.busy = 'fc'; S.bp.msg = ''; render();
@@ -1340,6 +1389,18 @@ function startOver() {
   const keep = Object.fromEntries(KEEP.map((k) => [k, S[k]]));
   Object.assign(S, JSON.parse(FRESH), keep, { version: S.catalog.default_version });
   applyPreset(S.catalog.default_preset);
+  go('project');
+}
+
+// A new bench for the version an upgrade check was for, starting with the apps and branches it picked.
+function newBenchFor(u) {
+  const list = u.apps.filter((a) => a.name !== 'frappe' && a.branch && a.repo).map((a) => ({ url: a.repo, branch: a.branch }))
+    .concat(u.new_apps.map((a) => ({ url: a.repo, branch: a.branch })));
+  Object.assign(S, JSON.parse(FRESH), Object.fromEntries(KEEP.map((k) => [k, S[k]])));
+  applyPreset(S.catalog.default_preset);
+  pickVersion(u.version);
+  S.importText = JSON.stringify(list, null, 1);
+  S.importMsg = `From the upgrade check: on the Apps step, press Add under "Paste an app list" to add these ${list.length} apps on their ${u.title} branches.`;
   go('project');
 }
 

@@ -651,6 +651,40 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(plan(branch="main", stash=True)[1]["steps"][0]["id"], "stash-custom")
         self.assertEqual(plan(branch="--upload-pack=x", stash=True)[0], 400)
 
+    def test_upgrade_is_planned_from_its_check_and_asks_about_python_and_local_changes(self):
+        from unittest import mock
+        from bench_wizard import projects, upgrade
+        from tests.test_projects import make_bench
+        from tests.test_sites import git
+        folder = make_bench(self.tmp / "home" / "b", projects.slot(0), sites=("a.localhost",))
+        remote, app = self.tmp / "remote", Path(folder) / "apps" / "helpdesk"
+        git(self.tmp, "init", "-q", "-b", "main", str(remote))
+        git(remote, "commit", "-q", "--allow-empty", "-m", "one")
+        git(remote, "branch", "develop")
+        git(self.tmp, "clone", "-q", "--origin", "upstream", str(remote), str(app))
+        canned = {"version": "version-16", "title": "Version 16", "errors": [], "notices": [], "new_apps": [], "node": "24",
+                  "apps": [{"name": "helpdesk", "now": "main", "branch": "develop", "repo": str(remote), "why": "", "changed": False}],
+                  "python": {"env": "3.11.9", "needs": ">=3.14", "use": "3.14", "ok": False}}
+        plan = lambda **body: self.request("POST", "/api/plan", dict(body, folder=folder, op="upgrade", version="version-16"))
+        self.assertEqual(plan()[0], 409)  # not checked yet
+        with mock.patch.object(upgrade, "check", lambda *a, **k: dict(canned)):
+            status, res = self.request("POST", "/api/bench/upgrade", {"folder": folder, "version": "version-16"})
+        self.assertEqual((status, res["current"]), (200, "version-15"))
+        status, res = plan()
+        self.assertEqual(status, 400)
+        self.assertIn("needs Python >=3.14", res["error"])
+        (app / "f.txt").write_text("x")
+        git(app, "add", "f.txt")  # staged, not committed
+        self.assertEqual(plan(rebuild=True)[0], 409)
+        status, p = plan(rebuild=True, stash=True)
+        self.assertEqual(status, 200)
+        self.assertEqual([s["id"] for s in p["steps"]], [
+            "backup-a.localhost", "stash-helpdesk", "fetch-helpdesk", "switch-helpdesk", "env-aside", "env", "nvmrc",
+            "requirements", "migrate", "build"])
+        self.assertEqual(p["title"], "Upgrade to Version 16")
+        self.assertTrue(any("python3.14" in c["label"] for c in p["checks"]))
+        self.assertEqual(self.request("POST", "/api/plan", {"folder": folder, "op": "upgrade", "version": "version-15"})[0], 409)
+
     def test_site_config_and_login_need_a_site_of_the_bench(self):
         from tests.test_projects import make_bench
         folder = make_bench(self.tmp / "home" / "b")

@@ -47,6 +47,7 @@ Python 3.10+ standard library only. No build step, no dependencies.
 | **Look into a site quickly** | [Open as Administrator](#sites) opens the desk already signed in; the bench's [logs](#logs) are searchable, with errors in red. |
 | **Copy a site for testing** | [Back up](#backups) a site, then **Restore as a new site**: a UAT copy with email muted and the scheduler paused. |
 | **Keep apps up to date** | [Check for updates](#apps) shows how many commits each app is behind; **Update** or **Change branch** pulls, migrates and builds. Uncommitted work is stashed, never lost. |
+| **Upgrade to the next Frappe version** | [Upgrade](#upgrade) picks each app's branch for it from what the app says it supports, then upgrades the bench in place (new Python environment included) or starts a new bench with those apps. |
 | **Try a Marketplace app** | Pick a free app from the [Frappe Cloud Marketplace](#3-apps); the wizard finds its repository and the branch for your Frappe version. |
 | **Work with private apps** | Paste a token-carrying HTTPS URL or choose an SSH host alias; the token is kept in memory only and scrubbed from logs. |
 
@@ -345,6 +346,27 @@ its own, and a shallow clone stays shallow.
   discards them, so the wizard does not use it.)
 - Untick *Migrate the sites after a switch* to move the code only, for quick hops between feature branches.
 - A migrate is not undone by switching back. Before moving to another major version, back the sites up.
+
+### Upgrade
+
+Moves the whole bench to another Frappe version. Pick the version and press **Check**; for each app the wizard shows
+the branch it would move to and why:
+
+- Frappe, ERPNext and the other catalog apps take their branch for that version.
+- Any other app (Helpdesk, CRM, your own) gets the first of `version-N`, `main`, `master`, `develop` and its current
+  branch whose `pyproject.toml` says it supports the new Frappe (`[tool.bench.frappe-dependencies]`). A branch that
+  declares nothing is picked by its name, and the row says to check it. An app no branch supports blocks the upgrade.
+- Apps the new branches require, and the Node they need, are worked out the same way as for a new bench.
+- An app with no remote stays on its branch.
+
+It also says whether the bench's own Python can run the new version (Frappe 16 needs Python 3.14). Then choose:
+
+- **Upgrade this bench**, as Frappe Cloud does: back up every site, move the apps (uncommitted changes are stashed if
+  you tick the box), give the bench a new Python environment when it needs one (the old one is kept as
+  `env-before-upgrade`; to go back, `rm -rf env && mv env-before-upgrade env` and switch the apps back), write
+  `.nvmrc`, add new apps, then `bench setup requirements`, migrate every site and `bench build`.
+- **Make a new bench instead**, which leaves this one as it is. The wizard starts a new setup for that version with
+  the picked apps and branches ready under *Paste an app list*; back the sites up here and restore a backup into it.
 
 ### Backups
 

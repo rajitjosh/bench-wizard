@@ -139,6 +139,30 @@ def plan_app_update(folder, app, branch=None, remote=None, stash=False, migrate=
         Step("build", f"build {app}", ["bench", "build", "--app", app], folder)]
 
 
+def plan_bench_upgrade(folder, sites, moves, new_apps, python=None, node=None):
+    """Move every app of a bench to another Frappe version, in place: back the sites up, switch the apps, give the
+    bench a new Python environment if it needs one, add apps the new branches require, then requirements, migrate
+    and build. `moves` are {"name", "branch", "remote", "stash"}; `python` ("3.14") rebuilds env/ with it."""
+    steps = plan_backup(folder, sites)
+    for move in moves:
+        steps += switch_steps(folder, move["name"], move["branch"], move.get("remote"), move.get("stash"))
+    if python:
+        if not re.fullmatch(r"\d+\.\d+", python):
+            raise PlanError(f"cannot use Python {python!r}")
+        old = "env-before-upgrade"  # kept, so going back is: rm -rf env && mv env-before-upgrade env
+        steps += [Step("env-aside", f"keep the old Python environment as {old}",
+                       ["sh", "-c", 'if [ -e "$1" ]; then echo "$1 exists: remove it or rename it first" >&2; exit 1; fi; '
+                                    'mv env "$1"', "sh", old], folder),
+                  Step("env", f"new Python {python} environment", ["bench", "setup", "env", "--python", f"python{python}"],
+                       folder)]
+    if node:
+        steps.append(_nvmrc(node, folder))
+    steps += [_get_app(app, folder) for app in new_apps]
+    return steps + [Step("requirements", "bench setup requirements", ["bench", "setup", "requirements"], folder),
+                    Step("migrate", "migrate every site", ["bench", "--site", "all", "migrate"], folder),
+                    Step("build", "build every app's assets", ["bench", "build"], folder)]
+
+
 def plan_download(folder, domain, links):
     """Download a Frappe Cloud backup's files into fc-backups/<domain>/ of the bench, under their own names."""
     target = os.path.join(folder, "fc-backups", _site_name(domain))
