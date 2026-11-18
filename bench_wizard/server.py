@@ -61,6 +61,7 @@ class App:
         self.extension = None  # {"version"} once the Frappe Cloud extension has checked in
         self.inbox = None  # the last app list the extension sent, until the page picks it up
         self.show_window = None  # set in app mode: brings back the wizard's window, False if it has none
+        self.quit = None  # set by __main__: stops the wizard (and closes its window)
         self.git_creds = {}  # URL prefix -> "user:token"; memory only, for this session
         if github_ssh_host and not gitauth.SSH_HOST.fullmatch(github_ssh_host):
             raise ValueError(f"not an SSH host alias: {github_ssh_host!r}")
@@ -203,6 +204,14 @@ class App:
     def post_window_show(self, query, body):
         """Opening the app again asks this first; it opens a new window only when this says False."""
         return {"shown": bool(self.show_window and self.show_window())}
+
+    def post_quit(self, query, body):
+        """The Quit button. Benches started from the wizard keep running; a run in progress would not."""
+        if self.active_runs():
+            raise ApiError(409, "a run is still working; wait for it to finish or cancel it, then quit")
+        if self.quit:
+            self.quit()
+        return {"ok": True}
 
     # -- plan and run --------------------------------------------------
     def post_plan(self, query, body):
@@ -844,6 +853,7 @@ class App:
         ("GET", "/api/extension"): get_extension,
         ("POST", "/api/extension/reveal"): post_extension_reveal,
         ("POST", "/api/window/show"): post_window_show,
+        ("POST", "/api/quit"): post_quit,
         ("POST", "/api/plan"): post_plan,
         ("POST", "/api/run"): post_run,
         ("GET", "/api/runs"): get_runs,

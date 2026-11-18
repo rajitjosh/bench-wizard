@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -767,6 +768,19 @@ class ServerTest(unittest.TestCase):
         self.app.show_window = lambda: True
         self.assertEqual(self.request("POST", "/api/window/show", {})[1], {"shown": True})
         self.assertEqual(self.request("POST", "/api/window/show", {}, token=None)[0], 403)
+
+    def test_quit_stops_the_wizard_unless_a_run_is_working(self):
+        quits = []
+        self.app.quit = lambda: quits.append(1)
+        self.assertEqual(self.request("POST", "/api/quit", {}, token=None)[0], 403)
+        self.app.runs = {"r": {"id": "r", "runner": types.SimpleNamespace(state="running")}}
+        status, body = self.request("POST", "/api/quit", {})
+        self.assertEqual(status, 409)
+        self.assertIn("run is still working", body["error"])
+        self.assertEqual(quits, [])
+        self.app.runs["r"]["runner"].state = "done"
+        self.assertEqual(self.request("POST", "/api/quit", {}), (200, {"ok": True}))
+        self.assertEqual(quits, [1])
 
     def test_reveal_extension_folder(self):
         status, body = self.request("POST", "/api/extension/reveal", {})

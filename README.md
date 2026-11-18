@@ -59,7 +59,8 @@ cd bench-wizard
 ```
 
 It opens `http://127.0.0.1:<port>/` in your browser (local only, token protected). Keep the terminal open
-while you use it; press Ctrl+C to stop.
+while you use it; press Ctrl+C, or **Quit Bench Wizard** in the side bar, to stop. Benches you started from the
+wizard keep running.
 
 | Option | What it does |
 |---|---|
@@ -67,6 +68,14 @@ while you use it; press Ctrl+C to stop.
 | `--app` | Opens the wizard in a window of its own and stops when that window is closed. The desktop icon uses this. |
 | `--no-browser` | Starts the server and prints the URL without opening a browser. |
 | `--port N` | Listens on port `N`. By default it takes the first free port of 47615–47619 (the extension looks there). |
+
+**The desktop icon.** A window of its own needs Chrome, Chromium, Edge or Brave; set
+`BENCH_WIZARD_BROWSER=/path/to/browser` to pick one. Without any of them the wizard opens in a tab of your default
+browser (Firefox, Safari) and keeps running after the tab is closed, until you press **Quit Bench Wizard**. Opening
+the icon again goes back to that wizard. The icon points at this folder: after moving or renaming it, run
+`./start.sh --install-desktop` again. To remove the icon, delete `~/.local/share/applications/bench-wizard.desktop`
+(Linux) or `~/Applications/Bench Wizard.app` (Mac). Whatever the wizard prints when started from the icon goes to
+`~/.local/state/bench-wizard/app.log`.
 
 ## How it works
 
@@ -507,6 +516,7 @@ folders in your home, and runs without the DevTools pipe, so reopening there ope
 
 | Symptom | What to do |
 |---|---|
+| The desktop icon does nothing | Read `~/.local/state/bench-wizard/app.log`. "needs Python 3.10 or later" on a Mac means Finder found the system `python3`; run `brew install python`. |
 | **Continue to apps** stays disabled | Every System check row must be OK *and* the MariaDB root password verified. |
 | "MariaDB did not accept this password" | Correct it, or on a fresh install use **Set this as the root password** (needs sudo). |
 | **Start setup** is disabled | A pre-flight check failed. Fix it (for example remove a leftover bench folder) and click **Re-run checks**. |

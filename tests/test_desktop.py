@@ -1,3 +1,4 @@
+import http.client
 import json
 import os
 import subprocess
@@ -112,6 +113,27 @@ class AppModeTest(unittest.TestCase):
             args = (Path(home) / "args").read_text()
             self.assertIn("--app=http://127.0.0.1:", args)
             self.assertIn("token=", args)
+            self.assertFalse((Path(home) / ".local/state/bench-wizard/instance.json").exists())
+
+    def test_quit_closes_the_window_and_stops_the_server(self):
+        with tempfile.TemporaryDirectory() as home:
+            proc = self.launch('echo "$@" > "$HOME/args"; echo $$ > "$HOME/pid"; exec sleep 60\n', home)
+            try:
+                deadline = time.time() + 10
+                while not (Path(home) / "pid").exists() and time.time() < deadline:
+                    time.sleep(0.1)
+                url = (Path(home) / "args").read_text().split()[0].split("=", 1)[1]
+                port, token = url.split(":")[2].split("/")[0], url.split("token=")[1]
+                conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=10)
+                conn.request("POST", "/api/quit", body=b"{}", headers={"X-Token": token,
+                                                                      "Content-Type": "application/json"})
+                self.assertEqual(conn.getresponse().status, 200)
+                proc.wait(timeout=10)  # well before the window's own 60 seconds
+            finally:
+                proc.kill()
+            self.assertEqual(proc.returncode, 0)
+            with self.assertRaises(ProcessLookupError):  # the window was closed too
+                os.kill(int((Path(home) / "pid").read_text()), 0)
             self.assertFalse((Path(home) / ".local/state/bench-wizard/instance.json").exists())
 
     def test_second_launch_reopens_the_first_instance(self):

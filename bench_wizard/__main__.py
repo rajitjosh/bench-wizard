@@ -1,8 +1,13 @@
+import sys
+
+if sys.version_info < (3, 10):  # before anything else is imported; a Mac's own python3 is often 3.9
+    sys.exit(f"bench-wizard needs Python 3.10 or later; {sys.executable} is {sys.version.split()[0]}. "
+             "On a Mac: brew install python")
+
 import argparse
 import json
 import os
 import subprocess
-import sys
 import threading
 import time
 import urllib.request
@@ -102,6 +107,12 @@ def main():
             page = url.split("?", 1)[0]
             app.show_window = lambda: desktop.show_page(devtools, page) and (
                 sys.platform != "darwin" or desktop.activate(window.pid))
+
+        def stop():
+            if window is not None:
+                window.terminate()
+            httpd.shutdown()
+        app.quit = lambda: threading.Timer(0.5, stop).start()  # after the Quit request has had its reply
         if window is not None:
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             window.wait()

@@ -1513,6 +1513,11 @@ const ACTIONS = {
   'mp-lookup': lookupMarket,
   'mp-add': () => { S.custom = { repo: S.mp.repo, branch: S.mpBranch }; addCustom(); },
   'start-over': startOver,
+  quit: async () => {
+    if (!confirm('Quit Bench Wizard? Benches you started keep running.')) return;
+    try { await api('POST', '/api/quit', {}); } catch (err) { return window.alert(err.message); }
+    document.body.innerHTML = '<main class="main"><p class="lead">Bench Wizard has stopped. You can close this tab; open Bench Wizard again to come back.</p></main>';
+  },
   'new-setup': () => { detachRun(); go(S.wizStep || 'project'); S.wizStep = ''; },
   'dismiss-run': async (arg) => {
     try { await api('POST', '/api/run/dismiss', { run: arg }); } catch (err) { return window.alert(err.message); }
