@@ -93,8 +93,9 @@ def branches(repo, version, env=None):
     if result.returncode != 0:
         lines = (result.stderr or "").strip().splitlines()
         if lines and "not found" in lines[-1]:
-            raise MarketplaceError("the repository its marketplace page links to is private or has been removed; "
-                                   "ask the publisher for access, or for where the app lives now")
+            raise MarketplaceError("the repository is private or has been removed, or the Git login on this machine "
+                                   "cannot see it; sign in to Git with an account that has access, or ask the app's "
+                                   "publisher where it lives now")
         raise MarketplaceError(lines[-1] if lines else "git ls-remote failed")
     names = sorted(line.split("refs/heads/", 1)[1] for line in result.stdout.splitlines() if "refs/heads/" in line)
     pick = next((b for b in (version, *FALLBACK_BRANCHES) if b in names), names[0] if names else "")

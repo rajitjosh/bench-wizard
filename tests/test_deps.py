@@ -358,3 +358,22 @@ class ResolveTest(unittest.TestCase):
         )
         self.assertTrue(any("no access" in e for e in res.errors))
         self.assertEqual(res.order, ["erpnext", "lending"])
+
+
+class GitCwdTest(unittest.TestCase):
+    def test_lookups_do_not_take_the_config_of_the_folder_the_wizard_runs_in(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, here = Path(tmp) / "remote", Path(tmp) / "wizard"
+            subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True)
+            subprocess.run(["git", "init", "-q", str(here)], check=True)
+            # like bench-wizard's own clone: a local setting that would break every lookup run from inside it
+            subprocess.run(["git", "-C", str(here), "config", "protocol.file.allow", "never"], check=True)
+            old = os.getcwd()
+            os.chdir(here)
+            try:
+                inside = subprocess.run(["git", "ls-remote", f"file://{repo}"], capture_output=True)
+                self.assertNotEqual(inside.returncode, 0)  # the setting does bite from inside
+                self.assertEqual(deps._git(["ls-remote", f"file://{repo}"]).returncode, 0)
+            finally:
+                os.chdir(old)

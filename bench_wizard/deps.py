@@ -156,6 +156,9 @@ def read_node_floor(text):
 
 def _git(args, cwd=None, timeout=120, env=None):
     env = dict(os.environ, **(env or {}), GIT_TERMINAL_PROMPT="0")
+    # Not from the wizard's own folder (start.sh runs it there): a clone's local credential or config settings
+    # would answer for every repository, instead of the login the person uses everywhere else.
+    cwd = cwd or tempfile.gettempdir()
     try:
         return subprocess.run(["git", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, errors="replace", timeout=timeout)
