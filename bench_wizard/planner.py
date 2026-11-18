@@ -97,16 +97,46 @@ def plan_uninstall(folder, site, app):
                  ["bench", "--site", _site_name(site), "uninstall-app", _site_name(app), "--yes"], folder)]
 
 
-def plan_app_update(folder, app, branch=None):
+def _branch_name(branch):
+    # Branch names may hold "/" (feature/x); none may read as an option or climb out with "..".
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./+-]*", branch or "") or ".." in branch or branch.endswith((".lock", "/")):
+        raise PlanError(f"cannot use the branch name {branch!r}")
+    return branch
+
+
+# Fetch one branch. get-app clones one branch: the remote is told to follow this one too (or the checkout cannot track
+# it, and bench update would not pull it), and a shallow clone stays shallow instead of downloading the whole history.
+FETCH_ONE = ('git config --get-all "remote.$1.fetch" | grep -qxF -e "+refs/heads/*:refs/remotes/$1/*" '
+             '-e "+refs/heads/$2:refs/remotes/$1/$2" || git remote set-branches --add "$1" "$2" || exit 1; '
+             'd=; [ -f "$(git rev-parse --git-dir)/shallow" ] && d=--depth=1; '
+             'exec git fetch $d "$1" "+refs/heads/$2:refs/remotes/$1/$2"')
+
+
+def switch_steps(folder, app, branch, remote=None, stash=False):
+    """Move an app to another branch with git itself, never `checkout -f` (which is what bench switch-to-branch
+    does, throwing away uncommitted work). `remote` names the remote when the branch is not local yet."""
+    app, branch = _site_name(app), _branch_name(branch)
+    app_dir = os.path.join(folder, "apps", app)
+    steps = [Step(f"stash-{app}", f"stash {app}'s local changes",
+                  ["git", "stash", "push", "-m", f"bench-wizard: before switching to {branch}"], app_dir)] if stash else []
+    if remote:
+        remote = _site_name(remote)
+        steps += [Step(f"fetch-{app}", f"fetch {branch} of {app}", ["sh", "-c", FETCH_ONE, "sh", remote, branch], app_dir),
+                  Step(f"switch-{app}", f"switch {app} to {branch}",
+                       ["git", "checkout", "-b", branch, "--track", f"{remote}/{branch}"], app_dir)]
+    else:
+        steps.append(Step(f"switch-{app}", f"switch {app} to {branch}", ["git", "checkout", branch, "--"], app_dir))
+    return steps
+
+
+def plan_app_update(folder, app, branch=None, remote=None, stash=False, migrate=True):
     """Pull an app's new commits, or move it to another branch, then bring the bench up to it."""
     app = _site_name(app)
-    first = (Step("switch", f"switch {app} to {branch}", ["bench", "switch-to-branch", _site_name(branch), app, "--upgrade"],
-                  folder) if branch else
-             Step("pull", f"pull {app}", ["bench", "update", "--pull", "--apps", app], folder))
-    return [first,
-            Step("requirements", "bench setup requirements", ["bench", "setup", "requirements"], folder),
-            Step("migrate", "migrate every site", ["bench", "--site", "all", "migrate"], folder),
-            Step("build", f"build {app}", ["bench", "build", "--app", app], folder)]
+    first = (switch_steps(folder, app, branch, remote, stash) if branch else
+             [Step("pull", f"pull {app}", ["bench", "update", "--pull", "--apps", app], folder)])
+    return first + [Step("requirements", "bench setup requirements", ["bench", "setup", "requirements"], folder)] + (
+        [Step("migrate", "migrate every site", ["bench", "--site", "all", "migrate"], folder)] if migrate else []) + [
+        Step("build", f"build {app}", ["bench", "build", "--app", app], folder)]
 
 
 def plan_download(folder, domain, links):

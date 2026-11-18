@@ -620,8 +620,36 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(plan(op="uninstall", site="a.localhost", app="hrms")[0], 400)  # not in the bench
         (Path(folder) / "apps" / "hrms" / ".git").mkdir(parents=True)
         self.assertEqual(plan(op="uninstall", site="a.localhost", app="hrms")[1]["title"], "Uninstall hrms from a.localhost")
-        self.assertEqual(plan(op="update-app", app="hrms", branch="version-16")[1]["title"], "Switch hrms to version-16")
+        self.assertEqual(plan(op="update-app", app="hrms", branch="version-16")[0], 400)  # no such branch, no remote
         self.assertEqual(plan(op="explode")[0], 400)
+
+    def test_change_branch_lists_local_branches_and_refuses_to_lose_local_changes(self):
+        from bench_wizard import projects
+        from tests.test_projects import make_bench
+        from tests.test_sites import git
+        folder = make_bench(self.tmp / "home" / "b", projects.slot(0), sites=("a.localhost",))
+        remote, app = self.tmp / "remote", Path(folder) / "apps" / "custom"
+        git(self.tmp, "init", "-q", "-b", "main", str(remote))
+        (remote / "f.txt").write_text("1\n")
+        git(remote, "add", "f.txt")
+        git(remote, "commit", "-q", "-m", "one")
+        git(remote, "branch", "develop")
+        git(self.tmp, "clone", "-q", str(remote), str(app))  # remote "origin", as after bench new-app and a push
+        git(app, "checkout", "-q", "-b", "feature/mine")  # never pushed
+        status, res = self.request("POST", "/api/bench/branches", {"folder": folder, "app": "custom"})
+        self.assertEqual((status, res["branches"][0], res["local_only"]), (200, "feature/mine", ["feature/mine"]))
+        self.assertEqual(sorted(res["branches"]), ["develop", "feature/mine", "main"])
+        plan = lambda **body: self.request("POST", "/api/plan", dict(body, folder=folder, op="update-app", app="custom"))
+        status, p = plan(branch="develop", migrate=False)
+        self.assertEqual([s["id"] for s in p["steps"]], ["fetch-custom", "switch-custom", "requirements", "build"])
+        self.assertIn("origin", p["steps"][0]["command"])
+        self.assertEqual([s["id"] for s in plan(branch="main")[1]["steps"]][:2], ["switch-custom", "requirements"])
+        (app / "f.txt").write_text("my work\n")
+        status, res = plan(branch="main")
+        self.assertEqual(status, 409)
+        self.assertIn("Stash and switch", res["error"])
+        self.assertEqual(plan(branch="main", stash=True)[1]["steps"][0]["id"], "stash-custom")
+        self.assertEqual(plan(branch="--upload-pack=x", stash=True)[0], 400)
 
     def test_site_config_and_login_need_a_site_of_the_bench(self):
         from tests.test_projects import make_bench

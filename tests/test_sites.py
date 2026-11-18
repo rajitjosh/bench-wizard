@@ -41,6 +41,33 @@ class SitesTest(unittest.TestCase):
         after = {a["name"]: a for a in sites.apps(self.bench, fetch=True)}
         self.assertEqual(after["erpnext"]["behind"], 2)
 
+    def test_switch_steps_move_a_shallow_clone_and_keep_local_work(self):
+        remote = self.root / "remote"
+        git(self.root, "init", "-q", "-b", "version-15", str(remote))
+        (remote / "f.txt").write_text("15\n")
+        git(remote, "add", "f.txt")
+        git(remote, "commit", "-q", "-m", "one")
+        git(remote, "checkout", "-q", "-b", "version-16")
+        (remote / "f.txt").write_text("16\n")
+        git(remote, "commit", "-q", "-am", "two")
+        git(remote, "checkout", "-q", "version-15")
+        app = Path(self.bench) / "apps" / "erpnext"
+        # how bench get-app clones: one branch, one commit deep, remote named upstream
+        git(self.root, "clone", "-q", "--depth", "1", "--branch", "version-15", "--origin", "upstream", f"file://{remote}", str(app))
+        (app / "f.txt").write_text("my work\n")
+        run = lambda steps: [subprocess.run(s.argv, cwd=s.cwd, check=True, capture_output=True,
+                                            env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                                                     GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")) for s in steps]
+        run(planner.switch_steps(self.bench, "erpnext", "version-16", "upstream", stash=True))
+        state = {a["name"]: a for a in sites.apps(self.bench)}["erpnext"]
+        self.assertEqual((state["branch"], state["upstream"], state["changed"]), ("version-16", "upstream/version-16", False))
+        self.assertEqual((app / "f.txt").read_text(), "16\n")
+        self.assertTrue((app / ".git" / "shallow").exists())  # still shallow: not the app's whole history
+        self.assertEqual(sorted(sites.local_branches(self.bench, "erpnext")), ["version-15", "version-16"])
+        run(planner.switch_steps(self.bench, "erpnext", "version-15"))  # back, to the branch it already has
+        git(app, "stash", "pop", "-q")
+        self.assertEqual((app / "f.txt").read_text(), "my work\n")
+
     def test_backups_pair_their_files_newest_first_including_frappe_cloud_downloads(self):
         backups = Path(self.bench) / "sites" / "a.localhost" / "private" / "backups"
         backups.mkdir(parents=True)
@@ -130,10 +157,15 @@ class PlansTest(unittest.TestCase):
         pull = planner.plan_app_update("/b", "erpnext")
         self.assertEqual([s.id for s in pull], ["pull", "requirements", "migrate", "build"])
         self.assertEqual(pull[0].argv, ["bench", "update", "--pull", "--apps", "erpnext"])
-        switch = planner.plan_app_update("/b", "erpnext", "version-16")
-        self.assertEqual(switch[0].argv, ["bench", "switch-to-branch", "version-16", "erpnext", "--upgrade"])
+        switch = planner.plan_app_update("/b", "erpnext", "version-16", "upstream", stash=True, migrate=False)
+        self.assertEqual([s.id for s in switch], ["stash-erpnext", "fetch-erpnext", "switch-erpnext", "requirements", "build"])
+        self.assertNotIn("-f", switch[2].argv)
+        self.assertEqual(planner.plan_app_update("/b", "erpnext", "feature/x")[0].argv, ["git", "checkout", "feature/x", "--"])
+        for bad in ("--force", "a/../b", "x.lock", ""):
+            with self.assertRaises(planner.PlanError):
+                planner.plan_app_update("/b", "erpnext", bad or None, "upstream") if bad else planner.switch_steps("/b", "erpnext", bad)
         with self.assertRaises(planner.PlanError):
-            planner.plan_app_update("/b", "erpnext", "--force")
+            planner.plan_app_update("/b", "erpnext", "version-16", "--upload-pack=x")
 
     def test_download_keeps_the_signed_link_out_of_the_log_and_refuses_odd_ones(self):
         steps = planner.plan_download("/b", "shop.frappe.cloud", {"database": ("x-database.sql.gz", "https://s3/x?sig=SECRET")})

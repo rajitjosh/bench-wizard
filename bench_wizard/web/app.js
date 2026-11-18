@@ -818,7 +818,7 @@ function viewDone() {
 // ---------------------------------------------------------------- one bench
 // The bench page: its sites, apps, backups and logs, read from the bench each time it opens.
 const freshBench = (folder) => ({ folder, d: null, busy: 'load', msg: '', note: '', sites: null, checked: false,
-  branches: {}, pick: {}, cfg: null, drop: null, migBackup: true, fcDomain: '', fcUrl: 'https://cloud.frappe.io', fc: {},
+  branches: {}, localOnly: {}, pick: {}, appMigrate: true, cfg: null, drop: null, migBackup: true, fcDomain: '', fcUrl: 'https://cloud.frappe.io', fc: {},
   log: { name: '', lines: [], offset: null, q: '', errors: false, follow: true } });
 const ERROR_LINE = /\b(ERROR|CRITICAL|FATAL)\b|\[(error|crit|alert|emerg)\]|Traceback \(most recent call last\)|^\s*[\w.]*(Error|Exception)\b:/;
 const when = (t) => new Date(typeof t === 'number' ? t * 1000 : t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
@@ -968,9 +968,9 @@ function viewBench() {
       : !bp.checked ? (a.changed ? '<span class="badge amber">Local changes</span>' : '')
         : `${a.behind ? `<span class="badge blue">${a.behind} new commit${a.behind === 1 ? '' : 's'}</span>` : a.behind === 0 ? '<span class="badge green">Up to date</span>' : ''}${a.changed ? ' <span class="badge amber">Local changes</span>' : ''}`;
     const list = bp.branches[a.name];
-    const switcher = list ? `<select class="in sm" data-bind="bp.pick.${esc(a.name)}" aria-label="Branch for ${esc(a.name)}">${list.map((b) => `<option ${b === bp.pick[a.name] ? 'selected' : ''}>${esc(b)}</option>`).join('')}</select>
-        <button class="btn sm" data-act="bp-switch" data-arg="${esc(a.name)}" ${busy ? 'disabled' : ''}>Switch</button>`
-      : `<button class="btn sm" data-act="bp-branches" data-arg="${esc(a.name)}" ${busy || a.error || !a.remote ? 'disabled' : ''}>Change branch</button>`;
+    const switcher = list ? `<select class="in sm" data-bind="bp.pick.${esc(a.name)}" aria-label="Branch for ${esc(a.name)}">${list.map((b) => `<option value="${esc(b)}" ${b === bp.pick[a.name] ? 'selected' : ''}>${esc(b)}${(bp.localOnly[a.name] || []).includes(b) ? ' (local only)' : ''}</option>`).join('')}</select>
+        <button class="btn sm" data-act="bp-switch" data-arg="${esc(a.name)}" ${busy ? 'disabled' : ''}>${a.changed ? 'Stash and switch' : 'Switch'}</button>`
+      : `<button class="btn sm" data-act="bp-branches" data-arg="${esc(a.name)}" ${busy || a.error ? 'disabled' : ''}>Change branch</button>`;
     return `<tr><td class="mono">${esc(a.name)}</td><td class="mono">${esc(a.branch)}</td>
       <td class="mono">${esc(a.commit)} <span class="sub">${esc(a.date)}</span></td><td>${status}</td>
       <td class="acts">${a.behind && bp.checked ? `<button class="btn sm tonal" data-act="bp-update" data-arg="${esc(a.name)}" ${busy ? 'disabled' : ''}>${icon('sync', 18)}Update</button>` : ''}${switcher}</td></tr>`;
@@ -978,7 +978,9 @@ function viewBench() {
   const apps = `<section class="card flush"><div class="loghead"><h2>Apps</h2><div class="right">
       <button class="btn sm" data-act="bp-check" ${busy ? 'disabled' : ''}>${bp.busy === 'check' ? '<span class="spin"></span> Checking…' : icon('refresh', 18) + 'Check for updates'}</button></div></div>
     <div style="overflow-x:auto"><table class="tbl stack"><thead><tr><th>App</th><th>Branch</th><th>Commit</th><th>Status</th><th></th></tr></thead><tbody>${appRows}</tbody></table></div>
-    <p class="lead small" style="padding:0 16px 16px">Update and Change branch pull the app, then run <span class="mono">bench setup requirements</span>, migrate every site and build the app's assets.</p></section>`;
+    <div class="lead small" style="padding:0 16px 16px">Update and Change branch pull the app, then run <span class="mono">bench setup requirements</span>, migrate every site and build the app's assets.
+      An app with changes that are not committed is stashed first; <span class="mono">git stash pop</span> in its folder brings them back.
+      <label class="tog small"><input type="checkbox" data-check="bp.appMigrate" ${bp.appMigrate ? 'checked' : ''}>Migrate the sites after a switch (untick to switch code only)</label></div></section>`;
 
   // Backups: on disk, and Frappe Cloud's; any of them becomes a new site
   const backupRows = d.backups.map((b, i) => `<tr><td class="mono">${esc(b.site)}</td><td>${esc(when(b.when))}</td>
@@ -1093,15 +1095,23 @@ const BENCH_ACTIONS = {
   'bp-update': (app) => benchRun({ op: 'update-app', app }, `Pull ${app}'s new commits, then set up requirements, migrate every site of this bench and build ${app}?`),
   'bp-branches': async (app) => {
     S.bp.busy = 'branches'; render();
-    try { const list = (await api('POST', '/api/bench/branches', { folder: S.bp.folder, app })).branches; S.bp.branches[app] = list; S.bp.pick[app] = list[0]; }
+    try {
+      const res = await api('POST', '/api/bench/branches', { folder: S.bp.folder, app });
+      Object.assign(S.bp, { msg: res.error ? `${app}: only its local branches are listed; the remote could not be read (${res.error})` : '' });
+      S.bp.branches[app] = res.branches; S.bp.localOnly[app] = res.local_only; S.bp.pick[app] = res.branches[0];
+    }
     catch (err) { S.bp.msg = `${app}: ${err.message}`; }
     S.bp.busy = ''; render();
   },
   'bp-switch': (app) => {
     const branch = S.bp.pick[app];
-    const current = S.bp.d.apps.find((a) => a.name === app).branch;
+    const { branch: current, changed } = S.bp.d.apps.find((a) => a.name === app);
     if (branch === current) { S.bp.msg = `${app} is on ${branch} already; use Check for updates to pull new commits.`; return render(); }
-    benchRun({ op: 'update-app', app, branch }, `Move ${app} from ${current} to ${branch}, then set up requirements, migrate every site of this bench and build ${app}? Moving to another major version changes every site's data; back the sites up first.`);
+    const migrate = S.bp.appMigrate;
+    benchRun({ op: 'update-app', app, branch, stash: changed, migrate },
+      (changed ? `${app} has changes that are not committed. They will be stashed (git stash pop in apps/${app} brings them back). ` : '')
+      + `Move ${app} from ${current} to ${branch}, then set up requirements${migrate ? ', migrate every site of this bench' : ''} and build ${app}?`
+      + (migrate ? ' Moving to another major version changes every site\'s data, and moving back does not undo it; back the sites up first.' : ''));
   },
   'bp-restore': (i) => restoreAsNewSite(Number(i)),
   'bp-fc-connect': async () => {

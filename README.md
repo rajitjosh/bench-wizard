@@ -46,7 +46,7 @@ Python 3.10+ standard library only. No build step, no dependencies.
 | **Migrate many sites after a pull** | [Migrate sites](#migrating-several-sites-at-once) backs up and migrates the sites you tick, side by side, each with its own log, and says which patch failed and why. |
 | **Look into a site quickly** | [Open as Administrator](#sites) opens the desk already signed in; the bench's [logs](#logs) are searchable, with errors in red. |
 | **Copy a site for testing** | [Back up](#backups) a site, then **Restore as a new site**: a UAT copy with email muted and the scheduler paused. |
-| **Keep apps up to date** | [Check for updates](#apps) shows how many commits each app is behind; **Update** or **Change branch** pulls, migrates and builds. |
+| **Keep apps up to date** | [Check for updates](#apps) shows how many commits each app is behind; **Update** or **Change branch** pulls, migrates and builds. Uncommitted work is stashed, never lost. |
 | **Try a Marketplace app** | Pick a free app from the [Frappe Cloud Marketplace](#3-apps); the wizard finds its repository and the branch for your Frappe version. |
 | **Work with private apps** | Paste a token-carrying HTTPS URL or choose an SSH host alias; the token is kept in memory only and scrubbed from logs. |
 
@@ -332,9 +332,19 @@ Each site shows the apps installed on it. On each site:
 
 Each app's branch and last commit. **Check for updates** fetches each app's remote branch and shows how many new
 commits it has, or *Up to date*; *Local changes* means files in the app were edited. **Update** pulls the new
-commits (`bench update --pull --apps <app>`); **Change branch** lists the repository's branches and moves the app to
-the one you pick (`bench switch-to-branch`). Both then run `bench setup requirements`, migrate every site and build
+commits (`bench update --pull --apps <app>`). Both then run `bench setup requirements`, migrate every site and build
 that app's assets.
+
+**Change branch** lists the repository's branches and the app's own, including ones never pushed (*local only*), and
+moves the app to the one you pick with `git checkout`. It works for any app with a Git repository: one added with
+`get-app`, or your own from `bench new-app` with an `origin` remote. A branch the app does not have yet is fetched on
+its own, and a shallow clone stays shallow.
+
+- Uncommitted changes are never thrown away. The button becomes **Stash and switch**, which stashes them first;
+  `git stash pop` in the app's folder brings them back. (`bench switch-to-branch` runs `git checkout -f`, which
+  discards them, so the wizard does not use it.)
+- Untick *Migrate the sites after a switch* to move the code only, for quick hops between feature branches.
+- A migrate is not undone by switching back. Before moving to another major version, back the sites up.
 
 ### Backups
 

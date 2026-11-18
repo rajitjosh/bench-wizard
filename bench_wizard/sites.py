@@ -68,6 +68,12 @@ def _app(folder, name, fetch):
     return info
 
 
+def local_branches(folder, app):
+    """The branches the app's clone has, pushed or not."""
+    ok, out = _git(os.path.join(folder, "apps", app), "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    return out.splitlines() if ok and out else []
+
+
 def apps(folder, fetch=False):
     """[{name, branch, commit, date, remote, upstream, changed, behind, error}] of the bench's apps. With `fetch`,
     each app's remote branch is fetched first, so `behind` counts the commits it has not pulled yet."""

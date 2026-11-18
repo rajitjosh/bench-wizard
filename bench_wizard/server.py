@@ -575,12 +575,18 @@ class App:
     def post_bench_branches(self, query, body):
         info, _ = self._light_bench(body.get("folder"))
         app = next((a for a in sites_mod.apps(info["folder"]) if a["name"] == self._app_of(info, body.get("app"))), None)
-        if not app["remote"]:
-            raise ApiError(400, f"{app['name']} has no remote to read branches from")
-        try:
-            return {"branches": market_mod.branches(app["remote"], app["branch"], env=self._git_env())}
-        except market_mod.MarketplaceError as exc:
-            raise ApiError(400, str(exc))
+        local = sites_mod.local_branches(info["folder"], app["name"])
+        remote, error = [], ""
+        if app["remote"]:
+            try:
+                remote = market_mod.branches(app["remote"], app["branch"], env=self._git_env())
+            except market_mod.MarketplaceError as exc:  # offline, say: its local branches can still be switched to
+                error = str(exc)
+        if not remote and not local:
+            raise ApiError(400, error or f"{app['name']} has no branches to switch to")
+        names = remote + [b for b in local if b not in remote]
+        names.sort(key=lambda b: b != app["branch"])  # the current one first, as the pick that changes nothing
+        return {"branches": names, "local_only": [b for b in local if b not in remote], "error": error}
 
     def get_bench_log(self, query, body):
         info, _ = self._light_bench(query.get("folder"))
@@ -652,8 +658,17 @@ class App:
             steps = self._steps(planner.plan_uninstall, folder, self._site_of(info, site), self._app_of(info, app))
             title = f"Uninstall {app} from {site}"
         elif op == "update-app":
-            branch = body.get("branch") or None
-            steps = self._steps(planner.plan_app_update, folder, self._app_of(info, app), branch)
+            branch, stash = body.get("branch") or None, bool(body.get("stash"))
+            state = next(a for a in sites_mod.apps(folder) if a["name"] == self._app_of(info, app))
+            remote = None
+            if branch:
+                if state["changed"] and not stash:
+                    raise ApiError(409, f"{app} has changes that are not committed; commit them, or choose Stash and switch")
+                if str(branch) not in sites_mod.local_branches(folder, app):
+                    remote = state["upstream"].split("/")[0] or None
+                    if not remote:
+                        raise ApiError(400, f"{app} has no branch {branch} and no remote to fetch it from")
+            steps = self._steps(planner.plan_app_update, folder, app, branch, remote, stash, body.get("migrate", True) is not False)
             title = f"Switch {app} to {branch}" if branch else f"Update {app}"
         elif op == "fc-download":
             domain = str(body.get("domain", ""))
