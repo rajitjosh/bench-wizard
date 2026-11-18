@@ -105,6 +105,13 @@ class App:
                 "mac": sys.platform == "darwin"}
 
     def post_install(self, query, body):
+        node = str(body.get("node") or "")
+        if node:  # from Review: the Node an app needs, which may not be the Frappe version's own
+            if not node.isdigit() or body.get("id") not in ("node", "yarn"):
+                raise ApiError(400, "only Node and Yarn can be installed for a given Node version, such as 20")
+            # any version's profile will do: only its Node is used by these two installs
+            profile = dict(next(iter(self.catalog["frappe_versions"].values())), node=node)
+            return self.checks.install(body["id"], profile, "")
         profile = self._profile(body.get("version", ""))
         result = self.checks.install(body.get("id", ""), profile, body.get("sudo_password", ""))
         return dict(result, rows=self.checks.detect_all(profile))

@@ -52,6 +52,12 @@ Python 3.10+ standard library only. No build step, no dependencies.
 
 ## Quick start
 
+On a fresh machine, first get Git and a Python of 3.10 or later; the wizard installs everything else:
+
+- **Ubuntu 22.04 or later** already has Python: `sudo apt install git` (or use GitHub's **Download ZIP**).
+- **Mac:** install [Homebrew](https://brew.sh) (it brings Git), then `brew install python`, since the Mac's own
+  `python3` is 3.9.
+
 ```bash
 git clone https://github.com/rajitjosh/bench-wizard.git
 cd bench-wizard

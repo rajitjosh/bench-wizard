@@ -240,7 +240,8 @@ def install_commands(check_id, profile, home=None, ubuntu=None, system=None, arc
         return _mac_install_commands(profile, arch)[check_id]
     python = f"python{profile['python']}"
     commands = {
-        "build": [_cmd(APT + BUILD_PACKAGES, sudo=True)],
+        # A fresh or long-idle machine may have no package lists yet; every apt row comes after this one.
+        "build": [_cmd(["apt-get", "update"], sudo=True), _cmd(APT + BUILD_PACKAGES, sudo=True)],
         "python": [
             _cmd(["add-apt-repository", "-y", "ppa:deadsnakes/ppa"], sudo=True),
             _cmd(["apt-get", "update"], sudo=True),

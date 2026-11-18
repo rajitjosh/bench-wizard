@@ -155,6 +155,8 @@ class PreflightTest(unittest.TestCase):
     def test_missing_node_names_the_resolved_version(self):
         rows = self.run_checks(resolution=self.resolution(node="22"), node=False)
         self.assertEqual(self.failed(rows), ["Node 22 is not installed with nvm. Fix: nvm install 22"])
+        self.assertEqual([r.get("install_node") for r in rows if not r["ok"]], ["22"])
+        self.assertFalse(any("install_node" in r for r in self.run_checks() if r["ok"]))
 
     def test_missing_tools_fail(self):
         self.assertEqual(len(self.failed(self.run_checks(tools=False))), 2)

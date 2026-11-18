@@ -26,7 +26,8 @@ class FakeChecks:
         return [dict(r, required=profile["python"]) for r in ROWS]
 
     def install(self, check_id, profile, sudo_password):
-        self.installed.append((check_id, profile["python"], sudo_password))
+        self.installed.append((check_id, profile["node"] if check_id in ("node", "yarn") else profile["python"],
+                               sudo_password))
         return {"ok": True, "log": "done", "error": None}
 
     def verify_mariadb_root(self, password):
@@ -185,6 +186,14 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(self.checks.installed, [("python", "3.11", "sp")])
         self.assertEqual(data["rows"][0]["id"], "python")
+
+    def test_review_installs_the_node_an_app_needs(self):
+        status, data = self.request("POST", "/api/checks/install", {"id": "node", "node": "22"})
+        self.assertEqual((status, data["ok"]), (200, True))
+        self.assertEqual(self.checks.installed, [("node", "22", "")])  # never with a sudo password
+        for bad in ({"id": "node", "node": "22; rm -rf ~"}, {"id": "python", "node": "22"}):
+            self.assertEqual(self.request("POST", "/api/checks/install", bad)[0], 400, bad)
+        self.assertEqual(len(self.checks.installed), 1)
 
     def test_mariadb_verify_and_set(self):
         self.assertFalse(self.request("POST", "/api/mariadb/verify", {"password": "x"})[1]["ok"])

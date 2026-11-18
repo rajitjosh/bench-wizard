@@ -133,6 +133,8 @@ def run(answers, resolution, backup_info, catalog, env, probe=None):
     found = probe.node_installed(node)
     add(found, f"Node {node} is installed with nvm" if found
         else f"Node {node} is not installed with nvm. Fix: nvm install {node}")
+    if not found:  # an app may need a newer Node than System check installed; Review offers to install it
+        rows[-1]["install_node"] = str(node)
 
     if restore:
         apps = backup_info.apps if backup_info else {}

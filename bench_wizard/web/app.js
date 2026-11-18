@@ -682,7 +682,7 @@ function viewReview() {
     </div></section>
     ${p.notices.length ? `<div class="note info">${INFO}<span>${p.notices.map(esc).join('<br>')}</span></div>` : ''}
     <section class="card"><div class="row"><h2>Pre-flight checks</h2><span class="badge ${p.ok ? 'green' : 'red'}">${passed} of ${p.checks.length} passed</span></div>
-      <div class="chk">${p.checks.map((c) => `<div class="crow"><span class="dotc ${c.ok ? 'ok' : 'fail'}">${icon(c.ok ? 'check' : 'priority_high', 16)}</span><span>${esc(c.label)}</span></div>`).join('')}</div></section>
+      <div class="chk">${p.checks.map((c) => `<div class="crow"><span class="dotc ${c.ok ? 'ok' : 'fail'}">${icon(c.ok ? 'check' : 'priority_high', 16)}</span><span>${esc(c.label)}</span>${c.install_node ? ` <button class="btn sm tonal" data-act="pf-node" data-arg="${esc(c.install_node)}" ${S.pfNode ? 'disabled' : ''}>${S.pfNode === c.install_node ? '<span class="spin"></span> Installing…' : `Install Node ${esc(c.install_node)}`}</button>` : ''}</div>`).join('')}</div></section>
     <section class="card"><div class="row"><h2>Commands</h2><span class="lead small">Secrets shown as ••••</span></div>
       <div class="cmd">${p.steps.map((s, i) => `<span class="n">${i + 1}</span>${esc(s.command)}`).join('\n')}</div>
       <p class="lead small">The bench's own Redis is started for the site steps and stopped when the run ends. Every step after the first runs inside the bench folder with the nvm Node ${esc(p.node)} <span class="mono">bin</span> and <span class="mono">~/.local/bin</span> on PATH.</p></section>`;
@@ -1451,6 +1451,18 @@ const ACTIONS = {
   'dep-all': () => { for (const n of S.depWarn.others.concat(S.depWarn.app)) S.apps[n].selected = false; S.depWarn = null; render(); },
   'dep-keep': () => { S.depWarn = null; render(); },
   replan: buildPlan,
+  'pf-node': async (node) => {  // Node (and its Yarn) for an app that needs a newer one than System check installed
+    S.pfNode = node; S.runMsg = ''; render();
+    for (const id of ['node', 'yarn']) {
+      let res;
+      try { res = await api('POST', '/api/checks/install', { id, node }); } catch (err) { res = { ok: false, log: err.message }; }
+      if (!res.ok) {
+        S.pfNode = ''; S.runMsg = ` ${id === 'node' ? 'Node' : 'Yarn'} ${node} could not be installed: ${(res.log || '').trim().split('\n').pop()}`;
+        return render();
+      }
+    }
+    S.pfNode = ''; buildPlan();
+  },
   start: startRun,
   'show-step': (arg) => { S.activeStep = arg; S.follow = false; render(); if (!S.logs[arg]) loadLog(arg); },
   retry: async () => { S.follow = true; try { await api('POST', '/api/run/retry', { run: S.run.run_id, cleanup: S.cleanup }); } catch (err) { window.alert(err.message); } },

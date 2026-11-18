@@ -168,7 +168,11 @@ class InstallCommandsTest(unittest.TestCase):
         self.assertIn("redis-server", argv)
 
     def test_build_installs_add_apt_repository(self):
-        self.assertIn("software-properties-common", self.cmds("build")[0]["argv"])
+        self.assertIn("software-properties-common", self.cmds("build")[1]["argv"])
+
+    def test_build_refreshes_package_lists_first(self):
+        first = self.cmds("build")[0]
+        self.assertEqual((first["argv"], first["sudo"]), (["apt-get", "update"], True))
 
     def test_charset_writes_config_then_restarts(self):
         cmds = self.cmds("charset")
