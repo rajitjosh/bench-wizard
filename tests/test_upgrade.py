@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -148,4 +150,15 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(tools, ["Read", "Grep", "Glob", "Skill"])
         with self.assertRaises(planner.PlanError):
             planner.plan_upgrade_report("/b", [("frappe", "r", "--upload-pack=x", "/t")], [], "/w/s.py")
+
+    def test_a_failed_review_keeps_no_review_but_does_not_stop_the_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "claude.md")
+            run = lambda cmd: subprocess.run(["sh", "-c", planner.KEEP_REVIEW, "sh", out, "sh", "-c", cmd],
+                                             capture_output=True, text=True)
+            failed = run("echo half; exit 1")
+            self.assertEqual((failed.returncode, os.listdir(tmp)), (0, []))
+            self.assertIn("Claude did not finish its review (exit 1)", failed.stdout)
+            self.assertEqual(run("echo review").returncode, 0)
+            self.assertEqual(Path(out).read_text(), "review\n")
 

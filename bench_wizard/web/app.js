@@ -24,7 +24,7 @@ const S = {
 // Every answer as the page first had it, for "Start over"; what is not an answer (checks, runs, projects) is kept.
 const FRESH = JSON.stringify(S);
 const KEEP = ['catalog', 'checks', 'mac', 'checksVersion', 'toolsInstalled', 'ext', 'run', 'runs', 'pwFor', 'follow', 'logs',
-  'activeStep', 'cleanup', 'proj', 'projFilter', 'projSite', 'portEdits', 'addFolder', 'mpApps', 'bp', 'fx'];
+  'activeStep', 'cleanup', 'cleanupFor', 'proj', 'projFilter', 'projSite', 'portEdits', 'addFolder', 'mpApps', 'bp', 'fx'];
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g,
@@ -106,7 +106,9 @@ function pickVersion(id) {
 function syncApps() {
   const backupApps = restoring() && S.backup ? Object.keys(S.backup.apps) : [];
   const onBench = isExisting() ? S.bench.apps : [];
-  const onSite = isExisting() && !S.benchNew ? S.bench.sites[S.benchSite].apps : [];
+  // an app whose install-app failed is listed as installed by Frappe; offer it again, already selected
+  const unfinished = isExisting() && !S.benchNew ? S.bench.sites[S.benchSite].unfinished || [] : [];
+  const onSite = isExisting() && !S.benchNew ? S.bench.sites[S.benchSite].apps.filter((a) => !unfinished.includes(a)) : [];
   const key = [S.mode, S.version, S.preset, backupApps.join(','), isExisting() ? S.bench.folder + '|' + (S.benchNew ? '+new' : S.benchSite) : ''].join('|');
   if (key === S.appsKey) return;
   S.appsKey = key;
@@ -121,8 +123,8 @@ function syncApps() {
       title: app.title, description: app.description, repo: app.repo, requires: app.requires,
       private: app.private, local: !!app.local, custom: false, branch, available: !!branch || onBench.includes(name),
       locked: name === 'frappe' || installed, inBackup, fromPreset: presetApps.includes(name),
-      onBench: onBench.includes(name), installed,
-      selected: (!!branch || onBench.includes(name)) && (name === 'frappe' || installed || presetApps.includes(name) || inBackup),
+      onBench: onBench.includes(name), installed, unfinished: unfinished.includes(name),
+      selected: (!!branch || onBench.includes(name)) && (name === 'frappe' || installed || presetApps.includes(name) || inBackup || unfinished.includes(name)),
     };
   }
   // Apps the bench has that the catalog does not know: installable on the site, not fetched again.
@@ -131,7 +133,8 @@ function syncApps() {
     const installed = onSite.includes(name);
     const inBackup = backupApps.includes(name);
     next[name] = { title: name, description: '', repo: '', requires: [], custom: false, branch: '', available: true,
-      locked: installed, selected: installed || inBackup, onBench: true, installed, inBackup };
+      locked: installed, selected: installed || inBackup || unfinished.includes(name), onBench: true, installed, inBackup,
+      unfinished: unfinished.includes(name) };
   }
   for (const [name, app] of Object.entries(S.apps)) if (app.custom && !next[name]) next[name] = app;
   S.apps = next;
@@ -217,7 +220,9 @@ const modeCard = () => `<section class="card"><h2>Bench</h2><div class="grid2" r
 function viewExisting() {
   const b = S.bench;
   const sites = !b ? '' : Object.entries(b.sites).map(([name, site]) => radio('bench-site', name, name === S.benchSite,
-    `<span class="mono">${esc(name)}</span>`, site.apps ? 'Installed: ' + site.apps.join(', ') : 'Cannot read its apps: ' + site.error,
+    `<span class="mono">${esc(name)}</span>`, site.apps ? 'Installed: ' + site.apps.filter((a) => !(site.unfinished || []).includes(a)).join(', ')
+      + (site.unfinished && site.unfinished.length ? ' · install did not finish: ' + site.unfinished.join(', ') : '')
+      : 'Cannot read its apps: ' + site.error,
     '', !site.apps)).join('') + radio('bench-new', '', S.benchNew, 'New site from a backup',
     'Restore a backup, for example from production, as a new site of this bench to look into an issue.')
     + radio('bench-migrate', '', S.benchMigrate, 'Migrate sites', 'Run bench migrate on several sites of this bench at the same time.');
@@ -364,7 +369,8 @@ function viewApps() {
       a.credentials ? '<span class="badge amber" title="Taken from the URL you gave. Kept in memory until the wizard closes; not written to disk.">Token held for this session</span>' : '',
       a.local ? '<span class="badge">Local</span>' : '',
       a.inBackup ? '<span class="badge green">in backup</span>' : '',
-      a.installed ? '<span class="badge green">installed on site</span>' : a.onBench ? '<span class="badge">in the bench</span>' : '',
+      a.unfinished ? '<span class="badge amber" title="install-app failed last time. It runs again with --force.">Install did not finish</span>'
+        : a.installed ? '<span class="badge green">installed on site</span>' : a.onBench ? '<span class="badge">in the bench</span>' : '',
       a.fromPreset && a.selected && !a.locked ? '<span class="badge">from preset</span>' : '',
       !a.available ? `<span class="badge amber">Not available for ${esc(profile().title)}</span>` : '',
     ].join(' ');
@@ -718,8 +724,11 @@ function viewRun() {
       <button class="btn primary" data-act="retry">Retry failed</button><button class="btn danger" data-act="abandon">Stop here</button></div>`;
   } else if (r.state === 'failed' && failedStep) {
     const n = steps.indexOf(failedStep) + 1;
+    const key = r.run_id + '|' + failedStep.id;
+    if (S.cleanupFor !== key) { S.cleanupFor = key; S.cleanup = !failedStep.cleanup_optin; }  // per failure, not carried over
     const cleanup = !failedStep.cleanup ? '' : failedStep.cleanup_required
       ? `Retrying first runs <span class="mono">${esc(failedStep.cleanup)}</span>, because this step cannot run over a partial result.`
+      : failedStep.cleanup_optin ? `Retrying runs it again with <span class="mono">--force</span>. If it fails the same way, tick cleanup: it runs <span class="mono">${esc(failedStep.cleanup)}</span> first, which deletes what the app added to the site.`
       : `A partial result may be on disk. Cleanup runs <span class="mono">${esc(failedStep.cleanup)}</span> before retrying.`;
     fail = `<div class="fail">${INFO}<div class="msg"><strong>${esc(failedStep.title)} failed.</strong> ${cleanup}</div>
       ${failedStep.cleanup && !failedStep.cleanup_required ? `<label class="tog"><input type="checkbox" data-check="cleanup" ${S.cleanup ? 'checked' : ''}>Run cleanup first</label>` : ''}
@@ -729,7 +738,7 @@ function viewRun() {
       <button class="btn" data-act="restart">Start again</button></div>`
       : r.summary.existing && r.summary.restore ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> The site <span class="mono">${esc(r.summary.site)}</span> may be partly created. Remove it with <span class="mono">bench drop-site ${esc(r.summary.site)}</span> before trying again; the rest of the bench is untouched.</div>
       <button class="btn" data-act="restart">Start again</button></div>`
-      : r.summary.existing ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> Apps fetched or installed so far stay in the bench; running the same plan again skips what is already installed on the site.</div>
+      : r.summary.existing ? `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> Apps fetched or installed so far stay in the bench; running the same plan again skips what is already installed on the site and installs again an app whose install did not finish.</div>
       <button class="btn" data-act="restart">Start again</button></div>`
       : `<div class="fail">${INFO}<div class="msg"><strong>The run was cancelled.</strong> What was created so far is still on disk: the bench folder <span class="mono">${esc(tilde(r.summary.folder))}</span>${steps.some((s) => s.id === 'new-site' && s.state !== 'waiting') ? ' and possibly the site ' + esc(r.summary.site) : ''}. Remove them before setting up the same project again.</div>
       <button class="btn" data-act="restart">Set up another bench</button></div>`;
@@ -940,6 +949,9 @@ function viewBench() {
     const apps = !bp.sites ? '<span class="sub">Reading apps…</span>' : !info ? '' : info.apps
       ? `<div class="chips">${info.apps.map((a) => `<span class="chip path mono">${esc(a)}${a === 'frappe' ? '' : `<button class="chip-x" data-act="bp-uninstall" data-arg="${esc(site + '|' + a)}" aria-label="Uninstall ${esc(a)} from ${esc(site)}" title="Uninstall from this site">${icon('close', 16)}</button>`}</span>`).join('')}</div>`
       : `<span class="sub">${esc(info.error)}</span>`;
+    const unfinished = info && info.unfinished && info.unfinished.length
+      ? `<div class="acts">${info.unfinished.map((a) => `<span class="badge amber">${esc(a)}: install did not finish</span>
+        <button class="btn sm tonal" data-act="bp-reinstall" data-arg="${esc(site + '|' + a)}" ${busy ? 'disabled' : ''}>${icon('sync', 18)}Finish installing</button>`).join('')}</div>` : '';
     let extra = '';
     if (bp.cfg && bp.cfg.site === site) {
       extra = `<tr class="xrow"><td colspan="3"><label class="f"><span>site_config.json of ${esc(site)}</span>
@@ -952,7 +964,7 @@ function viewBench() {
         <div class="grid2 end">${field('MariaDB root password', 'bp.drop.pw', { type: 'password', value: bp.drop.pw })}
         <div class="acts"><button class="btn sm danger" data-act="bp-drop-go" ${busy ? 'disabled' : ''}>Drop site</button><button class="btn sm" data-act="bp-drop-close">Cancel</button></div></div></td></tr>`;
     }
-    return `<tr><td class="mono">${esc(site)}</td><td>${apps}</td>
+    return `<tr><td class="mono">${esc(site)}</td><td>${apps}${unfinished}</td>
       <td class="acts"><button class="btn sm tonal" data-act="bp-login" data-arg="${esc(site)}" ${busy ? 'disabled' : ''} title="${run === false ? 'Starts the bench, then opens the desk signed in as Administrator' : 'Open the desk signed in as Administrator'}">${icon('arrow_forward', 18)}Open as Administrator</button>
         <button class="btn sm" data-act="bp-backup" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('storage', 18)}Back up</button>
         <button class="btn sm" data-act="bp-config" data-arg="${esc(site)}" ${busy ? 'disabled' : ''}>${icon('build', 18)}Config</button>
@@ -1123,6 +1135,10 @@ const BENCH_ACTIONS = {
   'bp-uninstall': (arg) => {
     const [site, app] = arg.split('|');
     benchRun({ op: 'uninstall', site, app }, `Uninstall ${app} from ${site}? Its doctypes and their data are deleted from this site; bench backs the site up first. The app stays in the bench.`);
+  },
+  'bp-reinstall': (arg) => {
+    const [site, app] = arg.split('|');
+    benchRun({ op: 'reinstall', site, app }, `Finish installing ${app} on ${site}? This runs install-app ${app} --force: its install steps run again and nothing is deleted. If it failed because of an error in the app, fix that first or it fails the same way.`);
   },
   'bp-check': async () => {
     S.bp.busy = 'check'; render();

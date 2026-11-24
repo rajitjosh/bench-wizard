@@ -41,6 +41,13 @@ class InspectBenchTest(unittest.TestCase):
         self.assertIn("Unknown database", info.sites["b.localhost"]["error"])
         self.assertNotIn("assets", info.sites)
 
+    def test_an_install_that_did_not_finish_is_listed(self):
+        marker = Path(existing.unfinished_dir(str(self.bench), "a.localhost")) / "erpnext"
+        marker.parent.mkdir(parents=True)
+        marker.touch()
+        info = existing.inspect(str(self.bench), CATALOG, self.env)
+        self.assertEqual(info.sites["a.localhost"], {"apps": ["frappe", "erpnext"], "unfinished": ["erpnext"]})
+
     def test_folder_that_is_not_a_bench(self):
         with self.assertRaises(existing.BenchError):
             existing.inspect(str(self.root), CATALOG, self.env)
@@ -52,6 +59,22 @@ class InspectBenchTest(unittest.TestCase):
         (self.bench / "env/pyvenv.cfg").write_text("home = /usr/bin\nversion_info = 3.10.12.final.0\n")
         profile = existing.own_profile(str(self.bench), "version-14")
         self.assertEqual((profile["title"], profile["python"], profile["existing_only"]), ("Version 14", "3.10", True))
+
+
+class LoggedUnfinishedTest(unittest.TestCase):
+    def test_a_failure_counts_until_a_later_try_finishes(self):
+        with tempfile.TemporaryDirectory() as root:
+            def log(run, app, text):
+                os.makedirs(os.path.join(root, run), exist_ok=True)
+                Path(root, run, f"install-{app}.log").write_text(text)
+            failed = "$ bench --site s install-app {0}\nTraceback\nexit code 1\n"
+            noop = "$ sh -c 'm=$1' sh /m bench --site s install-app {0}\nApp {0} already installed\n"
+            done = "$ bench --site s install-app {0} --force\nUpdating Dashboard for {0}\n"
+            log("2026-01-01-100000", "helpdesk", failed.format("helpdesk") + noop.format("helpdesk"))
+            log("2026-01-01-100000", "crm", failed.format("crm"))
+            log("2026-01-02-100000", "crm", done.format("crm"))
+            log("2026-01-02-100000", "wiki", "stray line\n" + done.format("wiki"))
+            self.assertEqual(existing.logged_unfinished(root), {"s": {"helpdesk"}})
 
 
 class NvmDefaultTest(unittest.TestCase):

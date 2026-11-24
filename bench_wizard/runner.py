@@ -58,6 +58,7 @@ class Runner:
                 "state": self._states[s.id], "duration": self._durations[s.id],
                 "cleanup": s.display(s.cleanup, s.cleanup_secret_args) if s.cleanup else None,
                 "cleanup_required": s.cleanup_required,
+                "cleanup_optin": s.cleanup_optin,
                 "diagnosis": self._diagnosis(s),
             } for s in self.steps],
         }

@@ -305,6 +305,28 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("no database", res["error"])
 
+    def test_an_install_that_did_not_finish_is_planned_again_with_force(self):
+        bench = BenchInfo(str(self.tmp / "b"), "version-15", "20", ["frappe", "erpnext"],
+                          {"s.localhost": {"apps": ["frappe", "erpnext"], "unfinished": ["erpnext"]}})
+        self.app.inspect_bench_fn = lambda folder, cat, env: bench
+        body = {"existing": True, "folder": "~/b", "site": "s.localhost",
+                "apps": [{"name": "erpnext", "repo": "", "branch": ""}]}
+        status, plan = self.request("POST", "/api/plan", body)
+        self.assertEqual((status, [s["id"] for s in plan["steps"]]), (200, ["install-erpnext", "build"]))
+        self.assertTrue(plan["steps"][0]["command"].endswith("install-app erpnext --force"))
+
+    def test_an_install_that_failed_in_an_earlier_run_is_flagged_from_its_log(self):
+        run = self.tmp / "state" / "2026-10-01-100000"
+        run.mkdir(parents=True)
+        (run / "install-erpnext.log").write_text("$ bench --site s.localhost install-app erpnext\nboom\nexit code 1\n"
+                                                 "$ bench --site s.localhost install-app erpnext\nApp erpnext already installed\n")
+        bench = BenchInfo(str(self.tmp / "b"), "version-15", "20", ["frappe", "erpnext", "crm"],
+                          {"s.localhost": {"apps": ["frappe", "erpnext"]}, "t.localhost": {"apps": ["frappe"]}})
+        self.app.inspect_bench_fn = lambda folder, cat, env: bench
+        sites = self.request("POST", "/api/bench/inspect", {"folder": "~/b"})[1]["sites"]
+        self.assertEqual(sites["s.localhost"]["unfinished"], ["erpnext"])
+        self.assertNotIn("unfinished", sites["t.localhost"])
+
     def test_new_site_from_a_backup_in_an_existing_bench(self):
         bench = BenchInfo(str(self.tmp / "b"), "version-15", "18", ["frappe", "erpnext"],
                           {"s.localhost": {"apps": ["frappe", "erpnext"]}})
@@ -620,6 +642,9 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(plan(op="uninstall", site="a.localhost", app="hrms")[0], 400)  # not in the bench
         (Path(folder) / "apps" / "hrms" / ".git").mkdir(parents=True)
         self.assertEqual(plan(op="uninstall", site="a.localhost", app="hrms")[1]["title"], "Uninstall hrms from a.localhost")
+        status, p = plan(op="reinstall", site="a.localhost", app="hrms")
+        self.assertEqual((status, p["title"]), (200, "Finish installing hrms on a.localhost"))
+        self.assertTrue(p["steps"][0]["command"].endswith("--site a.localhost install-app hrms --force"))
         self.assertEqual(plan(op="update-app", app="hrms", branch="version-16")[0], 400)  # no such branch, no remote
         self.assertEqual(plan(op="explode")[0], 400)
 

@@ -175,6 +175,11 @@ class App:
         except existing_mod.BenchError as exc:
             raise ApiError(400, str(exc))
         self._learn(bench.folder, bench.version)
+        logged = existing_mod.logged_unfinished(self.state_root)
+        for site, info in bench.sites.items():
+            found = set(info.get("unfinished", [])) | (logged.get(site, set()) & set(info.get("apps", [])))
+            if found:
+                info["unfinished"] = sorted(found)
         return bench
 
     def post_inspect_bench(self, query, body):
@@ -329,6 +334,9 @@ class App:
             if installed is None:
                 raise ApiError(400, f"cannot read the apps installed on {site}: "
                                     f"{bench.sites.get(site, {}).get('error', 'no such site in this bench')}")
+        # an install that did not finish is listed as installed by Frappe; it is installed again, with --force
+        unfinished = [] if restore else bench.sites[site].get("unfinished", [])
+        installed = [a for a in installed if a not in unfinished]
         version, profile = bench.version, self._profile(bench.version)
         wanted = [a for a in body.get("apps", []) if a.get("name") not in installed and a.get("name") != "frappe"]
         local = [a["name"] for a in wanted if a["name"] in bench.apps]
@@ -344,8 +352,8 @@ class App:
         answers = {"existing": True, "version": version, "folder": bench.folder, "site": site, "node": node,
                    "ports": projects.read_ports(bench.folder),  # only shown: the site's URL on the Done screen
                    "write_nvmrc": node != bench.node,  # also when there was none, so `nvm use` works after
-                   "apps": [{"name": n, "on_bench": True} for n in local]
-                           + [dict(resolution.apps[n], name=n) for n in resolution.order]}
+                   "apps": [{"name": n, "on_bench": True, "force": n in unfinished} for n in local]
+                           + [dict(resolution.apps[n], name=n, force=n in unfinished) for n in resolution.order]}
         if restore:
             answers.update(self._new_site(body, restore), site=site)
             steps = self._steps(planner.plan, answers, self.catalog)
@@ -775,6 +783,9 @@ class App:
         elif op == "uninstall":
             steps = self._steps(planner.plan_uninstall, folder, self._site_of(info, site), self._app_of(info, app))
             title = f"Uninstall {app} from {site}"
+        elif op == "reinstall":
+            steps = self._steps(planner.plan_reinstall, folder, self._site_of(info, site), self._app_of(info, app))
+            title = f"Finish installing {app} on {site}"
         elif op == "update-app":
             branch, stash = body.get("branch") or None, bool(body.get("stash"))
             state = next(a for a in sites_mod.apps(folder) if a["name"] == self._app_of(info, app))

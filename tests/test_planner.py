@@ -29,7 +29,8 @@ def restore(**over):
 
 
 def argvs(steps):
-    return [s.argv for s in steps]
+    """Each step's command; an install-app is shown without the marker wrapped around it."""
+    return [s.argv[5:] if s.argv[:3] == ["sh", "-c", planner.MARKED] else s.argv for s in steps]
 
 
 class PlanTest(unittest.TestCase):
@@ -262,8 +263,27 @@ class PlanExistingTest(unittest.TestCase):
         self.assertEqual(argvs(steps), [
             ["bench", "get-app", "--skip-assets", "--branch", "version-15", ERPNEXT["repo"]],
             s + ["clear-cache"], s + ["install-app", "crm"], s + ["install-app", "erpnext"], ["bench", "build"]])
-        # nothing in an existing bench may be cleaned up (removed) on retry
-        self.assertTrue(all(st.cwd == F and not st.cleanup for st in steps))
+        # only an install may be cleaned up (uninstalled) on retry, and only when the user ticks it
+        self.assertTrue(all(st.cwd == F for st in steps))
+        self.assertEqual([st.id for st in steps if st.cleanup], ["install-crm", "install-erpnext"])
+        self.assertTrue(all(st.cleanup_optin for st in steps if st.cleanup))
+
+    def test_install_is_marked_until_it_succeeds_and_retried_with_force(self):
+        install = self.plan(apps=[{"name": "crm", "on_bench": True}])[0]
+        marker = f"{F}/sites/demo.localhost/.bench-wizard/unfinished-installs/crm"
+        self.assertEqual(install.argv[3:5], ["sh", marker])
+        self.assertEqual(install.retry_argv, install.argv + ["--force"])
+        self.assertEqual(install.cleanup, ["bench", "--site", "demo.localhost", "uninstall-app", "crm", "--yes", "--force"])
+        # an install that did not finish last time is run with --force straight away
+        forced = self.plan(apps=[{"name": "crm", "on_bench": True, "force": True}])[0]
+        self.assertEqual(forced.argv, install.argv + ["--force"])
+
+    def test_marker_is_left_only_when_install_app_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, "sites/s/.bench-wizard/unfinished-installs/crm")
+            for cmd, left in (("true", False), ("false", True)):
+                rc = subprocess.run(["sh", "-c", planner.MARKED, "sh", marker, cmd]).returncode
+                self.assertEqual((rc != 0, os.path.exists(marker)), (left, left))
 
     def test_no_cache_clear_when_nothing_is_fetched(self):
         steps = self.plan(write_nvmrc=True, apps=[{"name": "crm", "on_bench": True}])
@@ -276,7 +296,7 @@ class PlanExistingTest(unittest.TestCase):
         self.assertEqual(argvs(self.plan(apps=[])), [["bench", "build"]])
 
     def test_site_name_is_validated(self):
-        self.assertEqual(self.plan(site="fine_and_raw.local")[-2].argv[2], "fine_and_raw.local")
+        self.assertEqual(argvs(self.plan(site="fine_and_raw.local"))[-2][2], "fine_and_raw.local")
         for bad in ("x;y", "-x", "a b"):
             with self.assertRaises(planner.PlanError):
                 self.plan(site=bad)

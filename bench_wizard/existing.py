@@ -1,4 +1,5 @@
 """Read a bench that already exists: its Frappe version, apps, sites and what each site has installed."""
+import glob
 import json
 import os
 import re
@@ -17,7 +18,43 @@ class BenchInfo:
     version: str  # catalog key, e.g. "version-15"
     node: str  # Node major from .nvmrc, "" when there is none
     apps: list  # apps in the bench, in sites/apps.txt order
-    sites: dict  # site -> {"apps": [installed apps]} or {"error": why they could not be read}
+    sites: dict  # site -> {"apps": [installed apps], "unfinished": [apps whose install-app failed]} or {"error": why}
+
+
+def unfinished_dir(folder, site):
+    """Where the wizard marks an app while install-app runs on a site; a marker left behind means it failed."""
+    return os.path.join(folder, "sites", site, ".bench-wizard", "unfinished-installs")
+
+
+def logged_unfinished(runs_root):
+    """{site: {app}} whose install-app failed in a wizard run and did not finish in a later one, read from the
+    runs' logs. It finds failures from before the markers existed.
+    shortcut: a log names the site but not its bench, so a site of the same name in another bench matches too;
+    the fix it leads to (install-app --force) deletes nothing."""
+    tries = {}  # (site, app) -> ["failed" | "done" | ""], oldest first: run folders are named by start time
+    for log in sorted(glob.glob(os.path.join(runs_root, "*", "install-*.log"))):
+        app, runs = os.path.basename(log)[len("install-"):-len(".log")], None
+        try:
+            with open(log, errors="replace") as fh:
+                for line in fh:
+                    started = re.match(r"\$ .*--site (\S+) install-app ", line)
+                    if started:
+                        runs = tries.setdefault((started.group(1), app), [])
+                        runs.append("")
+                    elif runs is None:
+                        continue
+                    elif re.match(r"exit code [1-9]", line):
+                        runs[-1] = "failed"
+                    elif line.startswith(f"Updating Dashboard for {app}"):  # printed after after_install and fixtures
+                        runs[-1] = "done"
+        except OSError:
+            continue
+    out = {}
+    for (site, app), runs in tries.items():
+        failed = [i for i, r in enumerate(runs) if r == "failed"]
+        if failed and "done" not in runs[failed[-1]:]:
+            out.setdefault(site, set()).add(app)
+    return out
 
 
 def _read(path):
@@ -85,4 +122,9 @@ def inspect(folder, catalog, env):
         raise BenchError(f"{folder} has no sites")
     with ThreadPoolExecutor(max_workers=4) as pool:
         sites = dict(zip(names, pool.map(lambda site: installed_apps(folder, site, env), names)))
+    for site, info in sites.items():
+        try:
+            info["unfinished"] = sorted(os.listdir(unfinished_dir(folder, site)))
+        except OSError:
+            pass
     return BenchInfo(folder, version, nvmrc_node(folder), apps, sites)

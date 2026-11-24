@@ -5,6 +5,8 @@ import shlex
 import sys
 from dataclasses import dataclass
 
+from .existing import unfinished_dir
+
 MASK = "••••"
 
 # What a restored production copy must not repeat: queued mail, mailbox pulls, webhooks, SMS and Slack alerts.
@@ -34,6 +36,7 @@ class Step:
     cleanup_secret_args: tuple = ()
     cleanup_required: bool = False
     retry_argv: list = None
+    cleanup_optin: bool = False  # its cleanup deletes data, so the Retry screen leaves it unticked
 
     def display(self, argv=None, secret_args=None):
         """The command as a shell line, with secret arguments masked."""
@@ -41,6 +44,21 @@ class Step:
             argv, secret_args = self.argv, self.secret_args
         secret_args = secret_args or ()
         return " ".join(MASK if i in secret_args else shlex.quote(a) for i, a in enumerate(argv))
+
+
+# Frappe saves an app as installed before its after_install hooks and fixtures run, so after a failed install-app
+# the app looks installed and running it again does nothing. This marker is removed only when install-app succeeds;
+# while it is there the wizard treats the app as not installed, and installs it again with --force.
+MARKED = 'm=$1; shift; mkdir -p "${m%/*}" && : > "$m" && "$@" && rm -f "$m"'
+
+
+def _install(app, folder, site):
+    name, site = _site_name(app["name"]), _site_name(site)
+    marked = ["sh", "-c", MARKED, "sh", os.path.join(unfinished_dir(folder, site), name),
+              "bench", "--site", site, "install-app", name]
+    return Step(f"install-{name}", f"install-app {name}", marked + (["--force"] if app.get("force") else []), folder,
+                retry_argv=marked + ["--force"], cleanup_optin=True,
+                cleanup=["bench", "--site", site, "uninstall-app", name, "--yes", "--force"])
 
 
 def _secret_after(argv, *flags):
@@ -95,6 +113,11 @@ def plan_uninstall(folder, site, app):
     """Remove an app from one site; bench backs the site up first. The app stays in the bench."""
     return [Step(f"uninstall-{app}", f"uninstall-app {app} from {site}",
                  ["bench", "--site", _site_name(site), "uninstall-app", _site_name(app), "--yes"], folder)]
+
+
+def plan_reinstall(folder, site, app):
+    """Finish an install-app that failed after Frappe had saved the app as installed: run it again with --force."""
+    return [_install({"name": app, "force": True}, folder, site)]
 
 
 def _branch_name(branch):
@@ -167,8 +190,11 @@ def plan_bench_upgrade(folder, sites, moves, new_apps, python=None, node=None):
 # A cached copy of one branch: cloned the first time, moved to the branch's newest commit after that.
 FETCH_TREE = ('if [ -d "$3/.git" ]; then git -C "$3" fetch -q --depth 1 origin "$2" && exec git -C "$3" checkout -q -f FETCH_HEAD; '
               'fi; mkdir -p "$(dirname "$3")" && exec git clone -q --depth 1 --branch "$2" -- "$1" "$3"')
-# Claude's review is kept only when it finished, so a stopped run never leaves half a report.
-KEEP_REVIEW = 'out=$1; shift; "$@" > "$out.part"; rc=$?; cat "$out.part"; [ $rc -eq 0 ] && mv "$out.part" "$out"; exit $rc'
+# Claude's review is kept only when it finished, so a stopped run never leaves half a report. A failed review (e.g.
+# Claude Code signed out) does not fail the step: the scanner's report is saved and the next apps are still scanned.
+KEEP_REVIEW = ('out=$1; shift; "$@" > "$out.part"; rc=$?; cat "$out.part"; if [ $rc -eq 0 ]; then mv "$out.part" "$out"; '
+               'else rm -f "$out.part"; echo "Claude did not finish its review (exit $rc), so none is kept. '
+               'The scanner\'s report is saved."; fi')
 
 
 def plan_upgrade_report(folder, trees, scans, scanner, claude=None, plugin=None):
@@ -245,8 +271,8 @@ def plan_build(folder):
 def plan_existing(answers):
     """Add apps to a site of a bench that already exists, then rebuild the assets.
 
-    Apps marked `on_bench` are in the bench already and are only installed on the site.
-    Nothing here removes anything, so no step has a cleanup.
+    Apps marked `on_bench` are in the bench already and are only installed on the site; apps marked `force` had an
+    install that did not finish. Only an install step has a cleanup (uninstall-app), and it runs only when ticked.
     """
     folder, site = answers["folder"], _site_name(answers["site"])
     on_site = ["bench", "--site", site]
@@ -256,8 +282,7 @@ def plan_existing(answers):
         # A running bench's Redis still holds the app -> modules map from before get-app; without
         # this, install-app syncs none of the new app's doctypes and its after_install fails.
         steps.append(Step("clear-cache", "clear-cache", on_site + ["clear-cache"], folder))
-    steps += [Step(f"install-{app['name']}", f"install-app {app['name']}", on_site + ["install-app", app["name"]],
-                   folder) for app in answers["apps"]]
+    steps += [_install(app, folder, site) for app in answers["apps"]]
     steps.append(Step("build", "bench build", ["bench", "build"], folder))
     return steps
 
@@ -305,7 +330,7 @@ def plan(answers, catalog):
         steps.append(Step(id, title, argv, extra.pop("cwd", folder), secrets, **extra))
 
     def install(app):
-        add(f"install-{app['name']}", f"install-app {app['name']}", on_site + ["install-app", app["name"]])
+        steps.append(_install(app, folder, site))
 
     if not existing:
         add("init", "bench init",
